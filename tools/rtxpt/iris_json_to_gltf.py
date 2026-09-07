@@ -113,9 +113,28 @@ class GltfBuilder(object):
         return len(self.accessors) - 1
 
 
+# SketchUp 기본 면 색 근사. 재질을 지정하지 않은 면에 쓴다.
+DEFAULT_MATERIAL_KEY = "__iris_default__"
+
+
 def convert_materials(builder, src_materials):
-    """프로브 머티리얼 → glTF 머티리얼. id → glTF 인덱스 맵을 반환."""
+    """프로브 머티리얼 → glTF 머티리얼. id → glTF 인덱스 맵을 반환.
+
+    ⚠ 머티리얼이 **없는** 프리미티브를 위한 기본 머티리얼을 반드시 하나 넣는다.
+    Donut의 glTF 임포터는 material 없는 프리미티브에서 죽는다(실측: 세그폴트).
+    실제 SketchUp 모델은 면의 40%가 재질 미지정이라 이 경로를 반드시 탄다.
+    """
     index_of = {}
+    builder.materials.append({
+        "name": "IRIS_Default",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [0.78, 0.78, 0.76, 1.0],
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.8,
+        },
+        "doubleSided": True,
+    })
+    index_of[DEFAULT_MATERIAL_KEY] = 0
     for m in src_materials:
         color = m.get("color") or [1.0, 1.0, 1.0]
         alpha = m.get("alpha")
@@ -154,8 +173,8 @@ def build_mesh(builder, meshes, mat_index, name):
 
         prim = {"attributes": attrs, "indices": builder.add_indices(idx), "mode": 4}
         mid = mb.get("material")
-        if mid is not None and mid in mat_index:
-            prim["material"] = mat_index[mid]
+        # material 은 **항상** 붙인다. 없으면 기본 머티리얼로. (위 convert_materials 주석 참조)
+        prim["material"] = mat_index.get(mid, mat_index[DEFAULT_MATERIAL_KEY])
         primitives.append(prim)
 
     if not primitives:
@@ -302,14 +321,19 @@ def _mat_mul(a, b):
 IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 
 
-def scene_bounds(doc):
-    """씬 전체 바운딩 박스를 **glTF(Y-up) 공간**으로 계산.
+def scene_bounds(doc, percentile=None):
+    """씬 바운딩 박스를 **glTF(Y-up) 공간**으로 계산.
 
     SketchUp Z-up (x,y,z) → glTF Y-up (x, z, -y).
+
+    percentile 을 주면(예: 2.0) 양 끝 그만큼을 잘라낸 박스를 돌려준다.
+    건축 대지 모델은 도로·주변 필지 같은 컨텍스트가 수 km 뻗어 있는 경우가 많아
+    절대 min/max 로 프레이밍하면 정작 건물이 점이 된다(실측: 대지 1,909 m).
     """
     lo = [float("inf")] * 3
     hi = [float("-inf")] * 3
     defs = doc.get("definitions") or {}
+    samples = [[], [], []] if percentile else None
 
     def acc(p):
         # Z-up → Y-up
@@ -319,6 +343,8 @@ def scene_bounds(doc):
                 lo[i] = q[i]
             if q[i] > hi[i]:
                 hi[i] = q[i]
+            if samples is not None:
+                samples[i].append(q[i])
 
     def visit(node, xf, depth):
         if depth > 32:
@@ -342,6 +368,18 @@ def scene_bounds(doc):
 
     if lo[0] > hi[0]:      # 지오메트리 없음
         return [-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]
+
+    if samples is not None and samples[0]:
+        plo, phi = [0.0] * 3, [0.0] * 3
+        for i in range(3):
+            s = sorted(samples[i])
+            k = max(0, min(len(s) - 1, int(len(s) * percentile / 100.0)))
+            plo[i], phi[i] = s[k], s[len(s) - 1 - k]
+        # 축이 통째로 눌리면(평평한 대지 등) 그 축은 원래 값을 쓴다
+        for i in range(3):
+            if phi[i] - plo[i] < 1e-6:
+                plo[i], phi[i] = lo[i], hi[i]
+        return plo, phi
     return lo, hi
 
 
@@ -390,7 +428,13 @@ def camera_node(bmin, bmax, fov=1.04):
         "rotation": [round(v, 7) for v in _quat_from_axes(xc, yc, zc)],
         "verticalFov": fov,
         "zNear": max(1e-4, radius * 1e-4),
+        # 노출은 기존 RTXPT 씬(bistro)과 같은 자동노출 설정을 따른다.
+        # 이게 없으면 건축 모델이 전반적으로 어둡게 나온다.
+        "exposureValue": -1.0,
         "enableAutoExposure": True,
+        "exposureCompensation": 1.2,
+        "exposureValueMin": -4.0,
+        "exposureValueMax": 6.0,
     }
 
 
@@ -414,6 +458,9 @@ def main():
     ap.add_argument("input", help="프로브가 만든 .iris.json")
     ap.add_argument("output", help="출력 .glb")
     ap.add_argument("--scene-json", help="RTXPT용 .scene.json 도 생성")
+    ap.add_argument("--frame-percentile", type=float, default=2.0,
+                    help="카메라 프레이밍용 바운딩 박스에서 잘라낼 양 끝 비율(%%). "
+                         "0이면 전체 범위. 기본 2.0 (멀리 있는 컨텍스트 지오메트리 무시)")
     ap.add_argument("--envmap",
                     default="EnvironmentMaps/kloofendal_48d_partly_cloudy_puresky_4k_cube_bc6u.dds",
                     help="환경광 큐브맵 (RTXPT Assets 기준 상대경로)")
@@ -444,7 +491,9 @@ def main():
 
     if args.scene_json:
         model_rel = os.path.basename(args.output)
-        bmin, bmax = scene_bounds(doc)
+        pct = args.frame_percentile if args.frame_percentile > 0 else None
+        bmin, bmax = scene_bounds(doc, pct)
+        fmin, fmax = scene_bounds(doc, None)
         scene = {
             "models": [model_rel],
             "graph": [
@@ -460,8 +509,11 @@ def main():
         with io.open(args.scene_json, "w", encoding="utf-8") as f:
             json.dump(scene, f, indent=2, ensure_ascii=False)
         size = [bmax[i] - bmin[i] for i in range(3)]
+        full = [fmax[i] - fmin[i] for i in range(3)]
         print("생성: %s" % args.scene_json)
-        print("  모델 범위(Y-up, m): %.2f x %.2f x %.2f" % (size[0], size[1], size[2]))
+        print("  전체 범위(Y-up, m): %.1f x %.1f x %.1f" % (full[0], full[1], full[2]))
+        print("  프레이밍 범위(%.0f%% 절단): %.1f x %.1f x %.1f"
+              % (args.frame_percentile, size[0], size[1], size[2]))
         print("  환경광: %s" % args.envmap)
     return 0
 
