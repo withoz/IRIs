@@ -415,12 +415,16 @@ module IRIS
       # entities를 훑어 면은 메시로 누적하고, 인스턴스는 children에 추가한다.
       # skip_faces: 캐시 적중 시 면 추출만 건너뛴다. 자식 인스턴스는 여전히 훑어야
       # 하는데, 벤치마크에서 면 순회 자체는 사실상 공짜였으므로(49M tri/s) 비용이 없다.
-      def collect_entities(entities, children, skip_faces: false)
+      # counts: 넘기면 **이 레벨만의** 면/삼각형/정점 수를 채운다.
+      #   @stats 델타로 재면 자식 정의의 추출분까지 섞여 들어간다
+      #   (collect_entities 가 자식 인스턴스를 만나면 그 정의도 추출하므로).
+      #   캐시에 그 값을 넣으면 적중 시 자손이 조상 수만큼 중복 계산된다 — 실측 5.4배.
+      def collect_entities(entities, children, skip_faces: false, counts: nil)
         buckets = {}
         entities.each do |e|
           case e
           when Sketchup::Face
-            accumulate_face(e, buckets) unless skip_faces
+            accumulate_face(e, buckets, counts) unless skip_faces
           when Sketchup::ComponentInstance
             children << instance_entry(e, e.definition)
           when Sketchup::Group
@@ -432,7 +436,7 @@ module IRIS
             end
           end
         end
-        skip_faces ? nil : finalize_buckets(buckets)
+        skip_faces ? nil : finalize_buckets(buckets, counts)
       end
 
       def instance_entry(inst, defn)
@@ -478,8 +482,8 @@ module IRIS
           end
           @stats['defs_cached'] += 1
         else
-          v0, t0, f0 = @stats['vertices'], @stats['triangles'], @stats['faces']
-          meshes = collect_entities(defn.entities, children)
+          local = { faces: 0, tris: 0, verts: 0 }
+          meshes = collect_entities(defn.entities, children, counts: local)
           if @cache
             mats = {}
             meshes.each do |mb|
@@ -487,7 +491,7 @@ module IRIS
               mats[mid] = @materials[mid] if mid && @materials[mid]
             end
             @cache.store(defn, meshes, mats,
-                         @stats['vertices'] - v0, @stats['triangles'] - t0, @stats['faces'] - f0,
+                         local[:verts], local[:tris], local[:faces],
                          { normals: @seen[:normals], uvs: @seen[:uvs] })
           end
           @stats['defs_extracted'] += 1
@@ -510,7 +514,7 @@ module IRIS
       # ------------------------------------------------------------ 지오메트리
 
       # 머티리얼별로 버킷을 나눈다 = 드로우콜/BLAS 지오메트리 분리 단위.
-      def accumulate_face(face, buckets)
+      def accumulate_face(face, buckets, counts = nil)
         mat  = face.material || face.back_material
         mkey = mat ? register_material(mat) : '__default__'
         buf  = (buckets[mkey] ||= { 'p' => [], 'n' => [], 'uv' => [], 'i' => [] })
@@ -555,8 +559,10 @@ module IRIS
           # 인덱스는 1-based이며 부호는 에지 가시성을 뜻한다 -> abs 필수
           buf['i'].push(base + poly[0].abs - 1, base + poly[1].abs - 1, base + poly[2].abs - 1)
           @stats['triangles'] += 1
+          counts[:tris] += 1 if counts
         end
         @stats['faces'] += 1
+        counts[:faces] += 1 if counts
 
         if (@stats['faces'] % PROGRESS_EVERY).zero?
           Sketchup.status_text =
@@ -565,9 +571,11 @@ module IRIS
         raise BudgetExceeded if @limit && @stats['triangles'] > @limit
       end
 
-      def finalize_buckets(buckets)
+      def finalize_buckets(buckets, counts = nil)
         buckets.map do |mkey, b|
-          @stats['vertices'] += b['p'].length / 3
+          n = b['p'].length / 3
+          @stats['vertices'] += n
+          counts[:verts] += n if counts
           {
             'material'  => (mkey == '__default__' ? nil : mkey),
             'positions' => b['p'],
