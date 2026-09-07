@@ -246,6 +246,7 @@ module IRIS
           'generated'    => Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
           'capabilities' => @caps,
           'materials'    => @materials.values,
+          'views'        => (@scene_views_list = collect_views(model)),
           'definitions'  => @definitions,
           'root'         => { 'meshes' => root_meshes, 'children' => root_children },
           'stats'        => @stats,
@@ -411,6 +412,56 @@ module IRIS
         key
       end
 
+      # ------------------------------------------------------------ 저장된 시점
+      #
+      # SketchUp의 '장면(Page)'에는 설계자가 잡아둔 카메라가 들어 있다. 실무 모델에는
+      # 보통 수십 개가 있고(이 모델은 20개 이상), 그것이 곧 "보여줄 시점"이다.
+      # 임의로 카메라를 놓는 것보다 이 시점을 그대로 쓰는 것이 맞다.
+      #
+      # Enscape 계열 제품이 호스트의 뷰를 동기화하는 것도 같은 이유다.
+      def collect_views(model)
+        out = []
+
+        # 현재 뷰포트 카메라도 하나의 시점으로 포함한다.
+        begin
+          out << view_entry('(현재 뷰)', model.active_view.camera)
+        rescue StandardError
+          nil
+        end
+
+        begin
+          model.pages.each do |page|
+            cam = (page.camera rescue nil)
+            next unless cam
+            out << view_entry((page.name rescue ''), cam)
+          end
+        rescue StandardError => e
+          @views_error = e.message
+        end
+        out.compact
+      end
+
+      def view_entry(name, cam)
+        {
+          'name'        => name,
+          'eye'         => point_m(cam.eye),
+          'target'      => point_m(cam.target),
+          'up'          => [cam.up.x.to_f, cam.up.y.to_f, cam.up.z.to_f],
+          # SketchUp fov 는 화면이 세로로 길면 수평 화각을 준다. 렌더러 쪽에서
+          # 종횡비를 알 수 없으므로 그대로 넘기고 해석은 소비자에게 맡긴다.
+          'fov_deg'     => (cam.fov rescue nil),
+          'perspective' => (cam.perspective? rescue true),
+          'aspect'      => (cam.aspect_ratio rescue 0.0),
+          'height'      => (cam.perspective? ? nil : (cam.height * INCH_TO_M rescue nil)),
+        }
+      rescue StandardError
+        nil
+      end
+
+      def point_m(p)
+        [(p.x * INCH_TO_M).to_f, (p.y * INCH_TO_M).to_f, (p.z * INCH_TO_M).to_f]
+      end
+
       # SketchUp 텍스처는 .skp 내부에 임베드되어 있어 `texture.filename` 경로에는
       # 파일이 없다. ImageRep(2018+)으로 꺼내 PNG로 저장한다.
       #
@@ -423,7 +474,12 @@ module IRIS
         file = "#{key}.png"
         path = File.join(@texture_dir, file)
         rel  = "textures/#{file}"
-        return rel if File.exist?(path)
+        if File.exist?(path)
+          # 이전 실행에서 이미 뽑아둔 것. 다시 쓰되 통계에는 따로 센다 —
+          # 이걸 구분하지 않으면 "추출 0개"로 보고돼 실패한 것처럼 보인다.
+          @stats['textures_reused'] += 1
+          return rel
+        end
 
         begin
           rep = tex.image_rep(true)
@@ -542,8 +598,11 @@ module IRIS
         w << ' [3] 머티리얼'
         w << "     고유 머티리얼 : #{@materials.size}"
         w << "     텍스처 보유   : #{@materials.values.count { |m| m['texture'] }}"
-        w << "     텍스처 추출   : #{@stats['textures_exported']} (실패 #{@stats['texture_errors']})"
+        w << "     텍스처 추출   : #{@stats['textures_exported']} 신규 / #{@stats['textures_reused']} 재사용 (실패 #{@stats['texture_errors']})"
         w << "     추출 실패 사유: #{@texture_error_msg}" if @texture_error_msg
+        w << ''
+        w << "     저장된 시점   : #{(@scene_views_list || []).size}"
+        w << "     시점 수집 오류: #{@views_error}" if @views_error
         w << ''
         w << ' [4] 증분 동기화 가능성'
         w << "     persistent_id    : #{@caps['persistent_id'] ? 'O — GUID 델타 추적 가능' : 'X — 추적 불가'}"
@@ -600,7 +659,7 @@ module IRIS
         @stats = {
           'faces' => 0, 'triangles' => 0, 'vertices' => 0, 'instances' => 0,
           'definitions' => 0, 'face_errors' => 0, 'groups_skipped' => 0,
-          'textures_exported' => 0, 'texture_errors' => 0,
+          'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
         }
         @definitions    = {}
         @materials      = {}

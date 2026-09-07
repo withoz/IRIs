@@ -477,6 +477,81 @@ def _quat_from_axes(xc, yc, zc):
     return [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]
 
 
+def zup_to_yup(p):
+    """SketchUp Z-up → glTF Y-up."""
+    return [p[0], p[2], -p[1]]
+
+
+def look_at_rotation(eye, target, up):
+    """eye→target 을 보는 카메라의 쿼터니언. 실패하면 None."""
+    import math
+    fwd = [target[i] - eye[i] for i in range(3)]
+    n = math.sqrt(sum(v * v for v in fwd))
+    if n < 1e-9:
+        return None
+    zc = [-fwd[i] / n for i in range(3)]          # 카메라 +Z 는 시선 반대
+
+    xc = [up[1] * zc[2] - up[2] * zc[1],
+          up[2] * zc[0] - up[0] * zc[2],
+          up[0] * zc[1] - up[1] * zc[0]]
+    n = math.sqrt(sum(v * v for v in xc))
+    if n < 1e-9:
+        # up 이 시선과 평행하면 다른 축으로 다시 시도
+        alt = [0.0, 0.0, 1.0] if abs(zc[1]) > 0.9 else [0.0, 1.0, 0.0]
+        xc = [alt[1] * zc[2] - alt[2] * zc[1],
+              alt[2] * zc[0] - alt[0] * zc[2],
+              alt[0] * zc[1] - alt[1] * zc[0]]
+        n = math.sqrt(sum(v * v for v in xc))
+        if n < 1e-9:
+            return None
+    xc = [v / n for v in xc]
+    yc = [zc[1] * xc[2] - zc[2] * xc[1],
+          zc[2] * xc[0] - zc[0] * xc[2],
+          zc[0] * xc[1] - zc[1] * xc[0]]
+    return _quat_from_axes(xc, yc, zc)
+
+
+def view_to_camera_node(v, index):
+    """프로브가 뽑은 SketchUp 장면 카메라 → RTXPT PerspectiveCamera 노드."""
+    import math
+    if not v.get("perspective", True):
+        return None            # 평행투영은 RTXPT가 다루지 않는다
+    eye = zup_to_yup(v.get("eye") or [0, 0, 0])
+    tgt = zup_to_yup(v.get("target") or [0, 0, 1])
+    up = zup_to_yup(v.get("up") or [0, 0, 1])
+    q = look_at_rotation(eye, tgt, up)
+    if q is None:
+        return None
+
+    fov_deg = v.get("fov_deg") or 60.0
+    dist = math.sqrt(sum((tgt[i] - eye[i]) ** 2 for i in range(3)))
+    return {
+        "name": "SU_%02d_%s" % (index, (v.get("name") or "view").replace(" ", "_")),
+        "type": "PerspectiveCamera",
+        "translation": [round(x, 5) for x in eye],
+        "rotation": [round(x, 7) for x in q],
+        "verticalFov": round(math.radians(float(fov_deg)), 6),
+        "zNear": max(1e-3, min(0.05, dist * 1e-3)),
+        "exposureValue": -1.0,
+        "enableAutoExposure": True,
+        "exposureCompensation": 1.2,
+        "exposureValueMin": -4.0,
+        "exposureValueMax": 6.0,
+    }
+
+
+def camera_pos_dir_up(v):
+    """RTXPT `--cameraPosDirUp` 인자 문자열 (9개 콤마 구분)."""
+    import math
+    eye = zup_to_yup(v.get("eye") or [0, 0, 0])
+    tgt = zup_to_yup(v.get("target") or [0, 0, 1])
+    up = zup_to_yup(v.get("up") or [0, 0, 1])
+    d = [tgt[i] - eye[i] for i in range(3)]
+    n = math.sqrt(sum(x * x for x in d)) or 1.0
+    d = [x / n for x in d]
+    return ",".join("%.5f" % x for x in (eye + d + up))
+
+
 def camera_node(bmin, bmax, fov=1.04):
     """바운딩 박스를 화면에 담는 3/4 시점 카메라 노드 (glTF Y-up 공간)."""
     import math
@@ -531,8 +606,10 @@ def write_glb(path, gltf, blob):
 def main():
     ap = argparse.ArgumentParser(description="SketchUp 프로브 JSON을 glTF(.glb)로 변환")
     ap.add_argument("input", help="프로브가 만든 .iris.json")
-    ap.add_argument("output", help="출력 .glb")
+    ap.add_argument("output", nargs="?", help="출력 .glb (--list-views 시 생략 가능)")
     ap.add_argument("--scene-json", help="RTXPT용 .scene.json 도 생성")
+    ap.add_argument("--list-views", action="store_true",
+                    help="저장된 SketchUp 장면 카메라를 RTXPT 인자 형식으로 출력하고 종료")
     ap.add_argument("--frame-percentile", type=float, default=2.0,
                     help="카메라 프레이밍용 바운딩 박스에서 잘라낼 양 끝 비율(%%). "
                          "0이면 전체 범위. 기본 2.0 (멀리 있는 컨텍스트 지오메트리 무시)")
@@ -543,6 +620,23 @@ def main():
 
     with io.open(args.input, encoding="utf-8") as f:
         doc = json.load(f)
+
+    if not args.list_views and not args.output:
+        print("출력 경로가 필요합니다 (또는 --list-views)")
+        return 1
+
+    if args.list_views:
+        views = doc.get("views") or []
+        print("저장된 시점 %d개 (RTXPT --cameraPosDirUp 인자)" % len(views))
+        for i, v in enumerate(views):
+            eye = v.get("eye") or [0, 0, 0]
+            tgt = v.get("target") or [0, 0, 0]
+            # SketchUp Z-up 기준 높이. 실내 시점은 대개 바닥+1.5m 근처다.
+            print("  [%2d] %-28s 높이 %7.2f m  fov %s  %s"
+                  % (i, (v.get("name") or "")[:28], eye[2], v.get("fov_deg"),
+                     "직교" if not v.get("perspective", True) else ""))
+            print("       --cameraPosDirUp %s" % camera_pos_dir_up(v))
+        return 0
 
     if doc.get("format") != "iris.sketchup.scene":
         print("경고: format 이 'iris.sketchup.scene' 이 아닙니다: %r" % doc.get("format"))
@@ -584,6 +678,14 @@ def main():
                  "realtimeMode": True, "enableAnimations": False},
             ],
         }
+        # SketchUp 장면(Page)에 저장된 시점을 카메라로 추가한다.
+        # 설계자가 잡아둔 시점이라 임의 카메라보다 낫다.
+        su_cams = []
+        for i, v in enumerate(doc.get("views") or []):
+            node = view_to_camera_node(v, i)
+            if node:
+                su_cams.append(node)
+        scene["graph"].extend(su_cams)
         with io.open(args.scene_json, "w", encoding="utf-8") as f:
             json.dump(scene, f, indent=2, ensure_ascii=False)
         size = [bmax[i] - bmin[i] for i in range(3)]
@@ -593,6 +695,7 @@ def main():
         print("  프레이밍 범위(%.0f%% 절단): %.1f x %.1f x %.1f"
               % (args.frame_percentile, size[0], size[1], size[2]))
         print("  환경광: %s" % args.envmap)
+        print("  SketchUp 장면 카메라: %d개 추가" % len(su_cams))
     return 0
 
 
