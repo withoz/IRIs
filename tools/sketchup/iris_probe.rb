@@ -98,9 +98,13 @@ module IRIS
         e
       end
 
-      def store(defn, meshes, mats, verts, tris, faces)
+      def store(defn, meshes, mats, verts, tris, faces, seen)
         @entries[defn.entityID] = {
-          meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces, dirty: false,
+          meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces,
+          # 능력 플래그(법선·UV 추출 성공 여부)도 함께 보관한다.
+          # 이게 없으면 캐시 적중 시 accumulate_face 가 안 돌아서
+          # "법선/UV 누락"으로 잘못 판정한다.
+          seen: seen, dirty: false,
         }
         attach(defn)
       end
@@ -468,6 +472,10 @@ module IRIS
           @stats['vertices']  += hit[:verts]
           @stats['triangles'] += hit[:tris]
           @stats['faces']     += hit[:faces]
+          if hit[:seen]
+            @seen[:normals] ||= hit[:seen][:normals]
+            @seen[:uvs]     ||= hit[:seen][:uvs]
+          end
           @stats['defs_cached'] += 1
         else
           v0, t0, f0 = @stats['vertices'], @stats['triangles'], @stats['faces']
@@ -479,7 +487,8 @@ module IRIS
               mats[mid] = @materials[mid] if mid && @materials[mid]
             end
             @cache.store(defn, meshes, mats,
-                         @stats['vertices'] - v0, @stats['triangles'] - t0, @stats['faces'] - f0)
+                         @stats['vertices'] - v0, @stats['triangles'] - t0, @stats['faces'] - f0,
+                         { normals: @seen[:normals], uvs: @seen[:uvs] })
           end
           @stats['defs_extracted'] += 1
         end
@@ -788,7 +797,11 @@ module IRIS
         w << ' [3] 머티리얼'
         w << "     고유 머티리얼 : #{@materials.size}"
         w << "     텍스처 보유   : #{@materials.values.count { |m| m['texture'] }}"
-        w << "     텍스처 추출   : #{@stats['textures_exported']} 신규 / #{@stats['textures_reused']} 재사용 (실패 #{@stats['texture_errors']})"
+        with_tex  = @materials.values.count { |m| m['texture'] }
+        with_file = @materials.values.count { |m| m['texture'] && m['texture']['export'] }
+        w << "     이미지 확보   : #{with_file} / #{with_tex}"
+        w << "     이번 실행     : #{@stats['textures_exported']} 신규 추출 / "              "#{@stats['textures_reused']} 기존 파일 재사용 / #{@stats['texture_errors']} 실패"
+        w << '     (캐시 적중한 정의의 머티리얼은 재추출하지 않으므로 위 두 줄이 다릅니다)'              if @stats['defs_cached'] > 0
         w << "     추출 실패 사유: #{@texture_error_msg}" if @texture_error_msg
         w << ''
         w << "     저장된 시점   : #{(@scene_views_list || []).size}"
