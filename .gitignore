@@ -1,0 +1,47 @@
+# ---- 빌드 산출물 ----
+build/
+out/
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# ---- CMake ----
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+*.cmake
+!CMakeLists.txt
+
+# ---- Visual Studio ----
+.vs/
+*.user
+*.suo
+*.vcxproj.filters
+
+# ---- 셰이더 캐시 ----
+*.spv
+shader_cache/
+
+# ---- 대용량 에셋 (Git LFS 도입 전까지 제외) ----
+assets/hdri/
+assets/textures/
+assets/models/
+*.hdr
+*.exr
+*.ifc
+*.rvt
+*.skp
+*.fbx
+
+# ---- 기타 ----
+.DS_Store
+Thumbs.db
+*.log
