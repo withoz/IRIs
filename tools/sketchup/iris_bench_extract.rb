@@ -23,6 +23,8 @@
 #
 # 주의: 읽기 전용이다. 모델을 변경하지 않는다.
 
+require 'fileutils'
+
 module IRIS
   module BenchExtract
 
@@ -31,19 +33,24 @@ module IRIS
 
     class << self
 
-      def run(limit: 30_000)
+      def run(limit: 30_000, out_dir: nil)
         model = Sketchup.active_model
         return puts('[IRIS] 활성 모델이 없습니다.') unless model
 
-        puts ''
-        puts '면 수집 중…'
+        # 콘솔은 읽기가 번거롭다. 프로브와 마찬가지로 파일로도 남긴다.
+        @log = []
+        say ''
+        say "모델: #{model.title}"
+        say "SketchUp #{Sketchup.version} / Ruby #{RUBY_VERSION}"
+        say ''
+        say '면 수집 중…'
         t0 = Time.now
         faces = collect_faces(model, limit)
-        puts format('  면 %d개 수집 (%.2f초)', faces.size, Time.now - t0)
+        say format('  면 %d개 수집 (%.2f초)', faces.size, Time.now - t0)
 
         tris = faces.sum { |f| [(f.vertices.length - 2), 1].max }
-        puts format('  삼각형 약 %d개', tris)
-        puts ''
+        say format('  삼각형 약 %d개', tris)
+        say ''
 
         results = []
         results << bench('A 현재 프로브 (point_at/normal_at/uv_at + rescue)', faces, tris) { |f| extract_a(f) }
@@ -54,23 +61,43 @@ module IRIS
         results << bench('F mesh() 호출만 (추출 없음)', faces, tris)                       { |f| extract_f(f) }
         results << bench('G 면 순회만 (mesh() 없음) — 상한', faces, tris)                  { |f| nil }
 
-        puts ''
-        puts '=' * 74
-        puts format('%-46s %10s %14s', '방식', '초', '삼각형/초')
-        puts '-' * 74
+        say ''
+        say '=' * 74
+        say format('%-46s %10s %14s', '방식', '초', '삼각형/초')
+        say '-' * 74
         base = results.first[:rate]
         results.each do |r|
           mark = r[:rate] > 0 && base > 0 ? format(' (%.1f배)', r[:rate] / base) : ''
-          puts format('%-46s %10.3f %14s%s', r[:name], r[:sec],
-                      r[:rate].round.to_s.reverse.scan(/\d{1,3}/).join(',').reverse, mark)
+          say format('%-46s %10.3f %14s%s', r[:name], r[:sec],
+                     r[:rate].round.to_s.reverse.scan(/\d{1,3}/).join(',').reverse, mark)
         end
-        puts '=' * 74
+        say '=' * 74
+        say ''
+        say 'A→D 사이가 Ruby 안에서 얻을 수 있는 개선폭입니다.'
+        say 'G(면 순회만)에 근접할수록 Ruby로는 더 못 짜낸다는 뜻이고,'
+        say '그 경우 C API 이관 외에 방법이 없습니다.'
+
+        path = write_log(out_dir)
         puts ''
-        puts 'A→D 사이가 Ruby 안에서 얻을 수 있는 개선폭입니다.'
-        puts 'G(면 순회만)에 근접할수록 Ruby로는 더 못 짜낸다는 뜻이고,'
-        puts '그 경우 C API 이관 외에 방법이 없습니다.'
-        puts ''
-        results.map { |r| [r[:name], r[:rate].round] }
+        puts "결과 저장: #{path}" if path
+        { saved: path }
+      end
+
+      def say(line)
+        @log ||= []
+        @log << line
+        puts line
+      end
+
+      def write_log(out_dir)
+        dir = out_dir || File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
+        FileUtils.mkdir_p(dir)
+        path = File.join(dir, 'bench_extract.txt')
+        File.open(path, 'w:UTF-8') { |f| f.write(@log.join("\n")) }
+        path
+      rescue StandardError => e
+        puts "결과 저장 실패: #{e.message}"
+        nil
       end
 
       # ------------------------------------------------------------ 수집
