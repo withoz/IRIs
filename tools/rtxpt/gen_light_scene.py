@@ -13,12 +13,17 @@ IRIS — RTXPT 다광원 테스트 씬 생성기
   ReSTIR ON/OFF 비교의 교차점을 찾는 것이 목적이다.
 
 사용법
-  python gen_light_scene.py <RTXPT_Assets_경로> [광원수 ...]
+  python gen_light_scene.py <RTXPT_Assets_경로> [i=<총광량>] [광원수 ...]
 
   예) python gen_light_scene.py E:/iris-ext/RTXPT/Assets 64 256 1024
+      python gen_light_scene.py E:/iris-ext/RTXPT/Assets i=7.5 1024
 
   생성물: <Assets>/kitchen-lights-<N>.scene.json
   RTXPT를 재시작하면 씬 목록에 나타난다.
+
+  ⚠ 총광량 주의: `--overrideAutoexposureOff`로 노출을 고정해 캡처할 때 광량이 과하면
+    화면이 포화(clipping)되어 품질 비교가 무의미해진다. 실측에서 총광량 120은 참조
+    이미지의 45.8%가 완전 포화됐다. 캡처 후 반드시 포화 비율을 확인할 것.
 
 주의
   - Donut 씬 그래프의 PointLight 필드: color, intensity, radius, range (+ translation)
@@ -101,7 +106,15 @@ def main():
         print("kitchen.scene.json 을 찾을 수 없습니다: %s" % assets_dir)
         return 1
 
-    counts = [int(a) for a in sys.argv[2:]] or [64, 256, 1024]
+    global TOTAL_INTENSITY
+    rest = sys.argv[2:]
+    for a in list(rest):
+        if a.startswith("i="):
+            TOTAL_INTENSITY = float(a[2:])
+            rest.remove(a)
+
+    counts = [int(a) for a in rest] or [64, 256, 1024]
+    print("총광량 %.3f (광원 수로 나눠 배분)" % TOTAL_INTENSITY)
     for n in counts:
         build(assets_dir, n)
     return 0
