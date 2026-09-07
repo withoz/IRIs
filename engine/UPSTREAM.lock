@@ -1,0 +1,18 @@
+# IRIS 엔진 상위 고정 (upstream pin)
+#
+# 이 파일이 IRIS 포크의 기준점입니다. bootstrap_engine.ps1 이 이 값으로 체크아웃합니다.
+# 상위를 올릴 때는 이 파일을 갱신하고 engine/patches/ 를 리베이스하십시오.
+
+repo   https://github.com/NVIDIA-RTX/RTXPT
+commit f08d1c739071e0faad0c7c274d861124c511abab
+date   2026-03-19 15:22:18 +0000
+
+# 서브모듈 (상위가 고정한 값 — 우리가 정하는 값이 아님)
+submodule Assets         2a38b92df0fb43ebf6c6e6603893052dacf5a4c8
+submodule External/Donut 2c1077673edb0e0d814c202e6ce8e502d245c2da
+submodule External/NVAPI 7cb76fce2f52de818b3da497af646af1ec16ce27
+submodule External/Nrd   b233cc3ec5b1db2763e45fd18c9bb19793016355
+submodule External/Omm   d3a474397fa762c30beaf877b09322796ae13839
+submodule External/Rtxdi 26a6c715aefbc4056954bd1c7e537b8a9ef8984c
+submodule External/Rtxtf 2fe3b7c1b1c4aef09219766d8f908d009c5a6df4
+submodule External/cxxopts 573ec27d7224a8a0866c1889737d355b8e4155d7

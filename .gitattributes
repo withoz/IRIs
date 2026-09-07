@@ -11,3 +11,13 @@
 *.rvt  binary
 *.fbx  binary
 *.spv  binary
+
+# 엔진 패치 — 바이트 그대로여야 합니다.
+# CRLF로 변환되면 git am 이 적용 대상 파일에 CRLF를 심어 넣어 깨집니다.
+*.patch -text
+*.irisb binary
+
+# Windows 전용 스크립트는 CRLF로 체크아웃
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf

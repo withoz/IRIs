@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Mon, 7 Sep 2026 20:11:15 +0900
+Subject: [PATCH] =?UTF-8?q?iris:=20NVIDIA=20=EA=B3=A0=EC=A7=80=20=EB=B0=8F?=
+ =?UTF-8?q?=20=ED=8F=AC=ED=81=AC=20=EC=84=A0=EC=96=B8=20=EC=B6=94=EA=B0=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+NVIDIA RTX SDKs LICENSE가 요구하는 고지 문구를 넣고, 이 트리가
+IRIS의 렌더링 코어로 쓰이는 RTXPT 포크임을 명시한다.
+
+준수 항목(실질적 추가 기능·고지·독립 배포 금지·4(e) 오픈소스 오염
+금지)과 External/ 서드파티 라이선스 표를 함께 기록했다.
+---
+ NOTICE-IRIS.md | 49 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+ create mode 100644 NOTICE-IRIS.md
+
+diff --git a/NOTICE-IRIS.md b/NOTICE-IRIS.md
+new file mode 100644
+index 0000000..d225fe8
+--- /dev/null
++++ b/NOTICE-IRIS.md
+@@ -0,0 +1,49 @@
++# IRIS — 서드파티 고지
++
++This software contains source code provided by NVIDIA Corporation.
++
++---
++
++## 이 트리에 대하여
++
++이 저장소는 **NVIDIA RTX Path Tracing (RTXPT)** 의 포크이며, AEC용 실시간
++패스트레이싱 렌더러 **IRIS** 의 렌더링 코어로 사용됩니다.
++
++| | |
++|---|---|
++| 상위 | https://github.com/NVIDIA-RTX/RTXPT |
++| 고정 커밋 | `f08d1c739071e0faad0c7c274d861124c511abab` (2026-03-19) |
++| 포크 브랜치 | `iris/main` |
++| 라이선스 | NVIDIA RTX SDKs LICENSE (`LICENSE.txt`) |
++
++원본 라이선스는 `LICENSE.txt` 에 그대로 있으며 변경하지 않았습니다.
++
++## 라이선스 준수 요약
++
++NVIDIA RTX SDKs LICENSE에 따라 이 포크는 다음을 지킵니다.
++
++1. **실질적 추가 기능** — IRIS는 CAD(SketchUp) 라이브 링크, 자체 씬 델타
++   프로토콜, 건축용 조명·재질 시스템을 제공합니다. SDK 재포장이 아닙니다.
++2. **고지** — 이 파일 첫 줄의 문구가 그 요구를 충족합니다.
++3. **독립 배포 금지** — SDK를 단독 제품으로 배포하거나 서브라이선스하지 않습니다.
++   IRIS 애플리케이션의 일부로만 오브젝트 코드 형태로 배포합니다.
++4. **오픈소스 오염 금지 (4(e))** — 소스 공개나 파생 저작물 공개를 요구하는
++   라이선스(GPL/LGPL 등)의 코드를 이 트리에 링크하지 않습니다.
++   IRIS가 IfcOpenShell(LGPL) 대신 web-ifc를 택한 근거 중 하나입니다.
++
++## 포함된 서드파티
++
++`External/` 아래 구성요소는 각자의 라이선스를 따릅니다.
++
++| | 라이선스 |
++|---|---|
++| Donut (`External/Donut`) | MIT |
++| NRD (`External/Nrd`) | NVIDIA RTX SDKs LICENSE |
++| RTXDI (`External/Rtxdi`) | NVIDIA RTX SDKs LICENSE |
++| OMM SDK (`External/Omm`) | NVIDIA RTX SDKs LICENSE |
++| RTXTF (`External/Rtxtf`) | NVIDIA RTX SDKs LICENSE |
++| NVAPI (`External/NVAPI`) | NVIDIA 소프트웨어 라이선스 |
++| cxxopts (`External/cxxopts`) | MIT |
++| Streamline / DXC / Agility SDK | 빌드 시 다운로드 — 각 패키지 라이선스 |
++
++> 배포 전에 위 표를 다시 확인하십시오. 상위 갱신으로 구성요소가 바뀔 수 있습니다.
