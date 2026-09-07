@@ -33,11 +33,20 @@ module IRIS
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
     MESH_FLAGS = 1 | 2 | 4
 
+    # 진행 표시 주기(면 단위). Ruby가 메인 스레드를 잡고 있어
+    # 상태바 갱신만이 유일하게 살아 있는 피드백 경로다.
+    PROGRESS_EVERY = 2000
+
+    # 삼각형 예산 초과 시 탈출용
+    class BudgetExceeded < StandardError; end
+
     class << self
 
       # ---------------------------------------------------------------- 실행
 
-      def run(dump: true, out_dir: nil, pretty: false)
+      # limit: 삼각형 예산. 초과하면 즉시 중단하고 거기까지의 통계만 낸다.
+      #        대형 모델에서 "끝나긴 하는가"를 먼저 확인할 때 쓴다.
+      def run(dump: true, out_dir: nil, pretty: false, limit: nil)
         model = Sketchup.active_model
         unless model
           puts '[IRIS] 활성 모델이 없습니다.'
@@ -45,13 +54,22 @@ module IRIS
         end
 
         reset!
+        @limit = limit
         t0 = Time.now
         @caps = probe_capabilities(model)
-        scene = build_scene(model)
+
+        scene = nil
+        begin
+          scene = build_scene(model)
+        rescue BudgetExceeded
+          @truncated = true
+        ensure
+          Sketchup.status_text = ''
+        end
         @elapsed = Time.now - t0
 
         path = nil
-        if dump
+        if dump && scene
           dir = out_dir || default_out_dir
           FileUtils.mkdir_p(dir)
           path = File.join(dir, "#{sanitize(model.title)}.iris.json")
@@ -64,7 +82,81 @@ module IRIS
         end
 
         report(model, path)
-        scene
+
+        # 씬 전체를 반환하면 Ruby 콘솔이 그 해시를 통째로 에코하다가 몇 분간 얼어붙는다.
+        # (정점 15만 개가 전부 텍스트가 된다.) 요약만 돌려주고 씬은 last_scene으로 꺼낸다.
+        @scene = scene
+        {
+          'stats'     => @stats,
+          'elapsed_s' => @elapsed.round(3),
+          'truncated' => @truncated,
+          'dump'      => path,
+          'report'    => File.join(default_out_dir, 'report.txt'),
+        }
+      end
+
+      # run이 만든 씬 해시. 콘솔에 그대로 찍지 말 것.
+      def last_scene
+        @scene
+      end
+
+      # ------------------------------------------------------- 규모 사전 조사
+
+      # 지오메트리 버퍼를 전혀 만들지 않고 규모만 센다.
+      # Face#mesh 호출도 생략하고 정점 수로 삼각형을 추정하므로 훨씬 빠르다.
+      # run이 얼마나 걸릴지 가늠할 때 먼저 이걸 돌린다.
+      def scan
+        model = Sketchup.active_model
+        return puts('[IRIS] 활성 모델이 없습니다.') unless model
+
+        @scan = { faces: 0, tris_est: 0, instances: 0, defs: {}, edges: 0, depth: 0 }
+        t0 = Time.now
+        begin
+          scan_entities(model.entities, 0)
+        ensure
+          Sketchup.status_text = ''
+        end
+        dt = Time.now - t0
+
+        puts ''
+        puts '--- IRIS 규모 사전 조사 ---'
+        puts " 면            : #{@scan[:faces]}"
+        puts " 삼각형(추정)  : #{@scan[:tris_est]}"
+        puts " 인스턴스      : #{@scan[:instances]}"
+        puts " 고유 정의     : #{@scan[:defs].size}"
+        puts " 최대 중첩깊이 : #{@scan[:depth]}"
+        puts format(' 조사 시간     : %.2f 초', dt)
+        puts ''
+        puts ' run()은 면마다 mesh()를 부르므로 이보다 훨씬 오래 걸립니다.'
+        puts ' 삼각형이 100만을 넘으면 limit를 걸고 시작하십시오:'
+        puts '   IRIS::Probe.run(dump: false, limit: 200_000)'
+        puts ''
+        # defs는 정의 ID 해시라 그대로 반환하면 콘솔이 길게 에코한다. 개수만 준다.
+        { faces: @scan[:faces], tris_est: @scan[:tris_est],
+          instances: @scan[:instances], defs: @scan[:defs].size, depth: @scan[:depth] }
+      end
+
+      def scan_entities(entities, depth)
+        @scan[:depth] = depth if depth > @scan[:depth]
+        entities.each do |e|
+          case e
+          when Sketchup::Face
+            @scan[:faces] += 1
+            # 볼록면 가정한 추정치. 구멍 있는 면은 과소평가된다.
+            @scan[:tris_est] += [(e.vertices.length - 2), 1].max
+            if (@scan[:faces] % PROGRESS_EVERY).zero?
+              Sketchup.status_text = "IRIS 사전조사… 면 #{@scan[:faces]}"
+            end
+          when Sketchup::ComponentInstance, Sketchup::Group
+            @scan[:instances] += 1
+            defn = e.is_a?(Sketchup::Group) ? group_definition(e) : e.definition
+            next unless defn
+            key = defn.entityID
+            next if @scan[:defs].key?(key)   # 정의당 1회만 하강
+            @scan[:defs][key] = true
+            scan_entities(defn.entities, depth + 1)
+          end
+        end
       end
 
       # ------------------------------------------------ 증분 동기화 테스트
@@ -261,6 +353,12 @@ module IRIS
           @stats['triangles'] += 1
         end
         @stats['faces'] += 1
+
+        if (@stats['faces'] % PROGRESS_EVERY).zero?
+          Sketchup.status_text =
+            "IRIS 추출 중… 면 #{@stats['faces']} / 삼각형 #{@stats['triangles']}"
+        end
+        raise BudgetExceeded if @limit && @stats['triangles'] > @limit
       end
 
       def finalize_buckets(buckets)
@@ -363,50 +461,70 @@ module IRIS
         defs  = @stats['definitions']
         reuse = defs > 0 ? (insts.to_f / defs) : 0
 
-        puts ''
-        puts '=============================================================='
-        puts " IRIS SketchUp 프로브 v#{VERSION}"
-        puts '=============================================================='
-        puts " 모델      : #{model.title.to_s.empty? ? '(제목 없음)' : model.title}"
-        puts " 파일      : #{model.path.to_s.empty? ? '(저장 안 됨)' : model.path}"
-        puts " SketchUp  : #{Sketchup.version}  /  Ruby #{RUBY_VERSION}"
-        puts ''
-        puts ' [1] 지오메트리 추출'
-        puts "     면            : #{@stats['faces']}"
-        puts "     삼각형        : #{tri}"
-        puts "     정점          : #{@stats['vertices']}"
-        puts "     법선 추출     : #{@seen[:normals] ? 'O' : 'X'}"
-        puts "     UV 추출       : #{@seen[:uvs] ? 'O' : 'X'}"
-        puts "     추출 실패 면  : #{@stats['face_errors']}"
-        puts ''
-        puts ' [2] 인스턴싱 (= BLAS 재사용)'
-        puts "     정의 수       : #{defs}"
-        puts "     인스턴스 수   : #{insts}"
-        puts format('     재사용률      : %.2f 인스턴스/정의', reuse)
-        puts "     스킵된 그룹   : #{@stats['groups_skipped']}"
-        puts ''
-        puts ' [3] 머티리얼'
-        puts "     고유 머티리얼 : #{@materials.size}"
-        puts "     텍스처 보유   : #{@materials.values.count { |m| m['texture'] }}"
-        puts ''
-        puts ' [4] 증분 동기화 가능성'
-        puts "     persistent_id    : #{@caps['persistent_id'] ? 'O — GUID 델타 추적 가능' : 'X — 추적 불가'}"
-        puts "     EntitiesObserver : #{@caps['entities_observer'] ? 'O' : 'X'}"
-        puts "     ModelObserver    : #{@caps['model_observer'] ? 'O' : 'X'}"
-        puts ''
-        puts ' [5] 성능'
-        puts format('     추출 시간     : %.1f ms', ms)
-        puts format('     처리량        : %.0f 삼각형/초', rate)
-        puts format('     1000만 삼각형 환산 : %.1f 초', 10_000_000.0 / rate) if rate > 0
-        puts format('     JSON 기록     : %.1f ms', @write_elapsed * 1000.0) if @write_elapsed
-        if path && File.exist?(path)
-          puts format('     덤프 파일     : %s (%.1f MB)', path, File.size(path) / 1048576.0)
+        w = []
+        w << ''
+        w << '=============================================================='
+        w << " IRIS SketchUp 프로브 v#{VERSION}"
+        w << '=============================================================='
+        w << " 모델      : #{model.title.to_s.empty? ? '(제목 없음)' : model.title}"
+        w << " 파일      : #{model.path.to_s.empty? ? '(저장 안 됨)' : model.path}"
+        w << " SketchUp  : #{Sketchup.version}  /  Ruby #{RUBY_VERSION}"
+        if @truncated
+          w << ''
+          w << " !! 삼각형 예산(#{@limit}) 초과로 중단됨 — 아래 수치는 부분 집계입니다."
+          w << '    처리량과 능력 판정은 유효하지만 총량·재사용률은 신뢰할 수 없습니다.'
         end
-        puts ''
-        puts ' 판정'
-        verdict.each { |line| puts "     #{line}" }
-        puts '=============================================================='
-        puts ''
+        w << ''
+        w << ' [1] 지오메트리 추출'
+        w << "     면            : #{@stats['faces']}"
+        w << "     삼각형        : #{tri}"
+        w << "     정점          : #{@stats['vertices']}"
+        w << "     법선 추출     : #{@seen[:normals] ? 'O' : 'X'}"
+        w << "     UV 추출       : #{@seen[:uvs] ? 'O' : 'X'}"
+        w << "     추출 실패 면  : #{@stats['face_errors']}"
+        w << ''
+        w << ' [2] 인스턴싱 (= BLAS 재사용)'
+        w << "     정의 수       : #{defs}"
+        w << "     인스턴스 수   : #{insts}"
+        w << format('     재사용률      : %.2f 인스턴스/정의', reuse)
+        w << "     스킵된 그룹   : #{@stats['groups_skipped']}"
+        w << ''
+        w << ' [3] 머티리얼'
+        w << "     고유 머티리얼 : #{@materials.size}"
+        w << "     텍스처 보유   : #{@materials.values.count { |m| m['texture'] }}"
+        w << ''
+        w << ' [4] 증분 동기화 가능성'
+        w << "     persistent_id    : #{@caps['persistent_id'] ? 'O — GUID 델타 추적 가능' : 'X — 추적 불가'}"
+        w << "     EntitiesObserver : #{@caps['entities_observer'] ? 'O' : 'X'}"
+        w << "     ModelObserver    : #{@caps['model_observer'] ? 'O' : 'X'}"
+        w << ''
+        w << ' [5] 성능'
+        w << format('     추출 시간     : %.1f ms', ms)
+        w << format('     처리량        : %.0f 삼각형/초', rate)
+        w << format('     1000만 삼각형 환산 : %.1f 초', 10_000_000.0 / rate) if rate > 0
+        w << format('     JSON 기록     : %.1f ms', @write_elapsed * 1000.0) if @write_elapsed
+        if path && File.exist?(path)
+          w << format('     덤프 파일     : %s (%.1f MB)', path, File.size(path) / 1048576.0)
+        end
+        w << ''
+        w << ' 판정'
+        verdict.each { |line| w << "     #{line}" }
+        w << '=============================================================='
+
+        text = w.join("\n")
+        puts text
+
+        # Ruby 콘솔은 긴 출력에 약하다. 파일로도 남겨 두면 밖에서 읽을 수 있다.
+        begin
+          dir = default_out_dir
+          FileUtils.mkdir_p(dir)
+          rp = File.join(dir, 'report.txt')
+          File.open(rp, 'w:UTF-8') { |f| f.write(text) }
+          puts "리포트 저장: #{rp}"
+        rescue StandardError => e
+          puts "리포트 저장 실패: #{e.message}"
+        end
+        nil
       end
 
       def verdict
@@ -437,6 +555,9 @@ module IRIS
         @seen           = { normals: false, uvs: false }
         @caps           = {}
         @write_elapsed  = nil
+        @truncated      = false
+        @limit          = nil
+        @scene          = nil
       end
 
       def safe_pid(e)
