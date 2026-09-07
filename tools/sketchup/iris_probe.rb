@@ -60,7 +60,11 @@ module IRIS
         # 텍스처는 지오메트리 수집 중에 뽑히므로 디렉터리를 먼저 만들어 둔다.
         if textures
           begin
-            @texture_dir = File.join(out_dir || default_out_dir, 'textures')
+            # ⚠ 모델별로 나눈다. 텍스처 파일명이 mat_<entityID> 인데 entityID 는
+            # 모델마다 다시 매겨지므로, 한 폴더에 섞으면 다른 모델의 텍스처를
+            # 재사용하는 사고가 난다.
+            @texture_rel = "textures/#{sanitize(model.title)}"
+            @texture_dir = File.join(out_dir || default_out_dir, 'textures', sanitize(model.title))
             FileUtils.mkdir_p(@texture_dir)
           rescue StandardError => e
             puts "텍스처 폴더 생성 실패, 텍스처 없이 진행합니다: #{e.message}"
@@ -473,7 +477,7 @@ module IRIS
 
         file = "#{key}.png"
         path = File.join(@texture_dir, file)
-        rel  = "textures/#{file}"
+        rel  = "#{@texture_rel}/#{file}"
         if File.exist?(path)
           # 이전 실행에서 이미 뽑아둔 것. 다시 쓰되 통계에는 따로 센다 —
           # 이걸 구분하지 않으면 "추출 0개"로 보고돼 실패한 것처럼 보인다.
@@ -671,6 +675,7 @@ module IRIS
         @limit          = nil
         @scene          = nil
         @texture_dir    = nil
+        @texture_rel    = nil
         @texture_error_msg = nil
       end
 
