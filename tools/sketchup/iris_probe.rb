@@ -13,6 +13,7 @@
 #   IRIS::Probe.unwatch
 #
 #   IRIS::Probe.cache_status        # 정의 캐시 상태
+#   IRIS::Probe.dirty_report        # 편집 후: 무효화된 정의와 재추출 예상 비용
 #   IRIS::Probe.cache_clear         # 캐시 비우고 옵저버 해제
 #   IRIS::Probe.run(cache: false)   # 캐시 없이 (비교용)
 #
@@ -155,6 +156,11 @@ module IRIS
         end
         @mat_obs = nil
         @entries.clear
+      end
+
+      # 무효화된 항목만. 델타 비용 측정에 쓴다.
+      def dirty_entries
+        @entries.select { |_, e| e[:dirty] }
       end
 
       def status
@@ -354,6 +360,32 @@ module IRIS
         st = @def_cache ? @def_cache.status : { entries: 0, dirty: 0, observers: 0, materials_observer: false }
         puts "정의 캐시: 항목 #{st[:entries]} / 무효 #{st[:dirty]} / 옵저버 #{st[:observers]}"              " / 머티리얼 감시 #{st[:materials_observer] ? 'O' : 'X'}"
         st
+      end
+
+      # 마지막 동기화 이후 무효화된 정의를 보고한다.
+      # 편집 -> dirty_report 순서로 호출하면 "이 편집이 얼마를 다시 추출하게 하는가"가 나온다.
+      def dirty_report(rate: 31_637.0)
+        unless @def_cache
+          puts '캐시가 없습니다. 먼저 IRIS::Probe.run 을 실행하십시오.'
+          return nil
+        end
+        d = @def_cache.dirty_entries
+        st = @def_cache.status
+
+        tris = d.values.sum { |e| e[:tris] }
+        puts ''
+        puts "무효화된 정의: #{d.size} / #{st[:entries]}"
+        puts "재추출할 삼각형: #{tris} (전체 대비 계산은 리포트 참조)"
+        puts format('예상 재추출 시간: %.1f ms  (기준 %d tri/s)', 1000.0 * tris / rate, rate)
+        unless d.empty?
+          puts ''
+          puts '  상위 무효 정의 (삼각형 기준):'
+          d.sort_by { |_, e| -e[:tris] }.first(10).each do |k, e|
+            puts format('    entityID %-12s 삼각형 %6d  면 %6d', k.to_s, e[:tris], e[:faces])
+          end
+        end
+        { dirty: d.size, total: st[:entries], tris: tris,
+          est_ms: (1000.0 * tris / rate).round(1) }
       end
 
       # 옵저버를 떼고 캐시를 비운다. 모델을 바꿔 열기 전에 반드시 호출할 것 —
