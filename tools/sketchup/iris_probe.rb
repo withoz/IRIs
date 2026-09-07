@@ -11,6 +11,13 @@
 #   IRIS::Probe.flush               # 감지된 델타 출력
 #   IRIS::Probe.unwatch
 #
+#   IRIS::Probe.cache_status        # 정의 캐시 상태
+#   IRIS::Probe.cache_clear         # 캐시 비우고 옵저버 해제
+#   IRIS::Probe.run(cache: false)   # 캐시 없이 (비교용)
+#
+# ⚠ 모델을 바꿔 열기 전에 cache_clear 를 호출하십시오. 캐시 키가 entityID 인데
+#   모델마다 다시 매겨지므로, 그대로 두면 엉뚱한 정의를 재사용합니다.
+#
 # 이 스크립트가 답하려는 질문:
 #   1. 렌더러가 필요한 데이터(정점·법선·UV·머티리얼·변환)를 전부 뽑을 수 있는가
 #   2. 인스턴싱 구조를 그대로 살릴 수 있는가 (= BLAS 재사용률)
@@ -40,13 +47,128 @@ module IRIS
     # 삼각형 예산 초과 시 탈출용
     class BudgetExceeded < StandardError; end
 
+    # ------------------------------------------------------------ 정의 캐시
+    #
+    # 추출 비용의 91%가 PolygonMesh에서 데이터를 꺼내는 데 들어간다
+    # (벤치마크 실측 — docs/05-씬-델타-프로토콜.md 7절). 그리고 그 비용은
+    # Ruby 루프를 다듬어서는 줄지 않는다.
+    #
+    # 그래서 빠르게 하는 대신 **적게** 한다. 정의마다 옵저버를 붙여 두고,
+    # 내용이 바뀌지 않은 정의는 이전 추출 결과를 그대로 쓴다.
+    # 실측 재사용률이 1.64~4.00이고 일반적인 편집은 정의 몇 개만 건드리므로,
+    # 두 번째 동기화부터는 대부분이 캐시 적중이 된다.
+    #
+    # ⚠ 세션 한정이다. entityID 를 키로 쓰는데 모델을 다시 열면 다시 매겨진다.
+
+    class DefWatcher < Sketchup::EntitiesObserver
+      def initialize(cache, key)
+        @cache = cache
+        @key = key
+      end
+
+      def onElementAdded(_entities, _entity)     = @cache.mark_dirty(@key)
+      def onElementModified(_entities, _entity)  = @cache.mark_dirty(@key)
+      def onElementRemoved(_entities, _id)       = @cache.mark_dirty(@key)
+      def onEraseEntities(_entities)             = @cache.mark_dirty(@key)
+    end
+
+    # 머티리얼 속성 변경은 정의의 EntitiesObserver 로 잡히지 않는다.
+    # 이게 없으면 색을 바꿔도 캐시가 옛 값을 계속 내놓는다.
+    class MatWatcher < Sketchup::MaterialsObserver
+      def initialize(cache)
+        @cache = cache
+      end
+
+      def onMaterialChange(_materials, _material) = @cache.invalidate_materials
+      def onMaterialRemoveAll(_materials)         = @cache.invalidate_materials
+      def onMaterialRemove(_materials, _material) = @cache.invalidate_materials
+    end
+
+    class DefCache
+      def initialize
+        @entries   = {}   # entityID => {meshes:, mats:, verts:, tris:, faces:, dirty:}
+        @observers = {}   # entityID => [definition, observer]
+        @mat_obs   = nil
+        @mat_model = nil
+      end
+
+      def fetch(defn)
+        e = @entries[defn.entityID]
+        return nil if e.nil? || e[:dirty]
+        e
+      end
+
+      def store(defn, meshes, mats, verts, tris, faces)
+        @entries[defn.entityID] = {
+          meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces, dirty: false,
+        }
+        attach(defn)
+      end
+
+      def mark_dirty(key)
+        e = @entries[key]
+        e[:dirty] = true if e
+      end
+
+      # 머티리얼이 바뀌면 어느 정의가 그걸 쓰는지 모르므로 전부 무효화한다.
+      # 머티리얼 편집은 드물어서 이 정도로 충분하다.
+      def invalidate_materials
+        @entries.each_value { |e| e[:dirty] = true }
+      end
+
+      def attach(defn)
+        return if @observers.key?(defn.entityID)
+        obs = DefWatcher.new(self, defn.entityID)
+        defn.entities.add_observer(obs)
+        @observers[defn.entityID] = [defn, obs]
+      rescue StandardError
+        nil
+      end
+
+      def attach_materials(model)
+        return if @mat_obs
+        @mat_obs   = MatWatcher.new(self)
+        @mat_model = model
+        model.materials.add_observer(@mat_obs)
+      rescue StandardError
+        @mat_obs = nil
+      end
+
+      def detach_all
+        @observers.each_value do |(defn, obs)|
+          begin
+            defn.entities.remove_observer(obs)
+          rescue StandardError
+            nil
+          end
+        end
+        @observers.clear
+        begin
+          @mat_model.materials.remove_observer(@mat_obs) if @mat_obs && @mat_model
+        rescue StandardError
+          nil
+        end
+        @mat_obs = nil
+        @entries.clear
+      end
+
+      def status
+        {
+          entries: @entries.size,
+          dirty: @entries.count { |_, e| e[:dirty] },
+          observers: @observers.size,
+          materials_observer: !@mat_obs.nil?,
+        }
+      end
+    end
+
     class << self
 
       # ---------------------------------------------------------------- 실행
 
       # limit: 삼각형 예산. 초과하면 즉시 중단하고 거기까지의 통계만 낸다.
       #        대형 모델에서 "끝나긴 하는가"를 먼저 확인할 때 쓴다.
-      def run(dump: true, out_dir: nil, pretty: false, limit: nil, textures: true)
+      def run(dump: true, out_dir: nil, pretty: false, limit: nil, textures: true, cache: true)
         model = Sketchup.active_model
         unless model
           puts '[IRIS] 활성 모델이 없습니다.'
@@ -70,6 +192,17 @@ module IRIS
             puts "텍스처 폴더 생성 실패, 텍스처 없이 진행합니다: #{e.message}"
             @texture_dir = nil
           end
+        end
+
+        # 정의 캐시. 세션 동안 유지되며 옵저버가 변경을 감시한다.
+        if cache
+          # class << self 안이므로 @def_cache 는 IRIS::Probe 자신의 인스턴스 변수다.
+          # 클래스 변수(@@)를 쓰면 싱글턴 클래스에 붙어 의도와 달라진다.
+          @def_cache ||= DefCache.new
+          @cache = @def_cache
+          @cache.attach_materials(model)
+        else
+          @cache = nil
         end
 
         @caps = probe_capabilities(model)
@@ -114,6 +247,24 @@ module IRIS
       # run이 만든 씬 해시. 콘솔에 그대로 찍지 말 것.
       def last_scene
         @scene
+      end
+
+      # ------------------------------------------------------------ 캐시 제어
+
+      def cache_status
+        st = @def_cache ? @def_cache.status : { entries: 0, dirty: 0, observers: 0, materials_observer: false }
+        puts "정의 캐시: 항목 #{st[:entries]} / 무효 #{st[:dirty]} / 옵저버 #{st[:observers]}"              " / 머티리얼 감시 #{st[:materials_observer] ? 'O' : 'X'}"
+        st
+      end
+
+      # 옵저버를 떼고 캐시를 비운다. 모델을 바꿔 열기 전에 반드시 호출할 것 —
+      # entityID 가 다시 매겨지므로 그대로 두면 엉뚱한 정의를 재사용한다.
+      def cache_clear
+        @def_cache&.detach_all
+        @def_cache = nil
+        @cache = nil
+        puts '정의 캐시를 비우고 옵저버를 해제했습니다.'
+        true
       end
 
       # ------------------------------------------------------- 규모 사전 조사
@@ -258,12 +409,14 @@ module IRIS
       end
 
       # entities를 훑어 면은 메시로 누적하고, 인스턴스는 children에 추가한다.
-      def collect_entities(entities, children)
+      # skip_faces: 캐시 적중 시 면 추출만 건너뛴다. 자식 인스턴스는 여전히 훑어야
+      # 하는데, 벤치마크에서 면 순회 자체는 사실상 공짜였으므로(49M tri/s) 비용이 없다.
+      def collect_entities(entities, children, skip_faces: false)
         buckets = {}
         entities.each do |e|
           case e
           when Sketchup::Face
-            accumulate_face(e, buckets)
+            accumulate_face(e, buckets) unless skip_faces
           when Sketchup::ComponentInstance
             children << instance_entry(e, e.definition)
           when Sketchup::Group
@@ -275,7 +428,7 @@ module IRIS
             end
           end
         end
-        finalize_buckets(buckets)
+        skip_faces ? nil : finalize_buckets(buckets)
       end
 
       def instance_entry(inst, defn)
@@ -304,7 +457,32 @@ module IRIS
           'id' => key, 'name' => defn.name, 'meshes' => [], 'children' => [],
         }
         children = []
-        meshes   = collect_entities(defn.entities, children)
+
+        hit = @cache && @cache.fetch(defn)
+        if hit
+          # 면 추출만 건너뛰고 자식은 그대로 훑는다.
+          collect_entities(defn.entities, children, skip_faces: true)
+          meshes = hit[:meshes]
+          # 캐시된 메시가 참조하는 머티리얼 레코드를 이번 실행의 목록에 되살린다.
+          hit[:mats].each { |mid, rec| @materials[mid] ||= rec }
+          @stats['vertices']  += hit[:verts]
+          @stats['triangles'] += hit[:tris]
+          @stats['faces']     += hit[:faces]
+          @stats['defs_cached'] += 1
+        else
+          v0, t0, f0 = @stats['vertices'], @stats['triangles'], @stats['faces']
+          meshes = collect_entities(defn.entities, children)
+          if @cache
+            mats = {}
+            meshes.each do |mb|
+              mid = mb['material']
+              mats[mid] = @materials[mid] if mid && @materials[mid]
+            end
+            @cache.store(defn, meshes, mats,
+                         @stats['vertices'] - v0, @stats['triangles'] - t0, @stats['faces'] - f0)
+          end
+          @stats['defs_extracted'] += 1
+        end
 
         @definitions[key]['meshes']        = meshes
         @definitions[key]['children']      = children
@@ -593,6 +771,14 @@ module IRIS
         w << "     UV 추출       : #{@seen[:uvs] ? 'O' : 'X'}"
         w << "     추출 실패 면  : #{@stats['face_errors']}"
         w << ''
+        w << ' [1-b] 정의 캐시'
+        w << "     신규 추출     : #{@stats['defs_extracted']}"
+        w << "     캐시 적중     : #{@stats['defs_cached']}"
+        if (@stats['defs_extracted'] + @stats['defs_cached']) > 0
+          hit = 100.0 * @stats['defs_cached'] / (@stats['defs_extracted'] + @stats['defs_cached'])
+          w << format('     적중률        : %.1f%%', hit)
+        end
+        w << ''
         w << ' [2] 인스턴싱 (= BLAS 재사용)'
         w << "     정의 수       : #{defs}"
         w << "     인스턴스 수   : #{insts}"
@@ -664,6 +850,7 @@ module IRIS
           'faces' => 0, 'triangles' => 0, 'vertices' => 0, 'instances' => 0,
           'definitions' => 0, 'face_errors' => 0, 'groups_skipped' => 0,
           'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
+          'defs_extracted' => 0, 'defs_cached' => 0,
         }
         @definitions    = {}
         @materials      = {}
@@ -676,6 +863,7 @@ module IRIS
         @scene          = nil
         @texture_dir    = nil
         @texture_rel    = nil
+        # @cache 는 여기서 지우지 않는다 — 세션 동안 유지되는 것이 목적이다
         @texture_error_msg = nil
       end
 
