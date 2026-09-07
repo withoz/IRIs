@@ -10,7 +10,8 @@ AEC용 실시간 렌더링 프로그램. Enscape 계열의 CAD/BIM 연동 실시
 | [docs/01-실시간렌더러-오픈소스-자료집.md](docs/01-실시간렌더러-오픈소스-자료집.md) | 오픈소스 SDK·라이브러리·학습자료 종합 자료집 (링크 112개) |
 | [docs/02-Enscape-아키텍처-분석.md](docs/02-Enscape-아키텍처-분석.md) | 시장 1위의 실제 구현. 자료집 권장 경로와의 모순 |
 | [docs/03-자사엔진-현황과-접점.md](docs/03-자사엔진-현황과-접점.md) | AXiA3D·axia-sketch 현황 + IRIS 접점 옵션 |
-| [docs/04-RTXPT-실측.md](docs/04-RTXPT-실측.md) | RTXPT 빌드·성능 실측. 빌드 함정과 파이프라인 비교 |
+| [docs/04-RTXPT-실측.md](docs/04-RTXPT-실측.md) | RTXPT 빌드·성능·품질 실측. 실제 SketchUp 모델 렌더 |
+| [docs/05-씬-델타-프로토콜.md](docs/05-씬-델타-프로토콜.md) | 라이브 링크 프로토콜 설계 초안 |
 | [docs/실시간렌더러-자료집.html](docs/실시간렌더러-자료집.html) | 01번 문서의 단독 실행 HTML (열람·공유용) |
 | [tools/sketchup/](tools/sketchup/) | SketchUp 라이브 링크 프로브 + 실측 결과 |
 
