@@ -26,10 +26,16 @@ IRIS — SketchUp 프로브 JSON → glTF(.glb) 변환기
   정점을 건드리지 않고 **루트 노드에 X축 -90° 회전**을 걸어 변환한다. 원본 좌표가
   그대로 남아 있어야 나중에 SketchUp으로 되돌리는 경로(라이브 링크 역방향)가 쉬워진다.
 
+텍스처
+  프로브가 `ImageRep#save_as` 로 .skp 내부 텍스처를 PNG로 뽑아 두면(materials[].texture.export)
+  그 파일을 읽어 **.glb 안에 임베드**한다. 외부 파일 배치가 필요 없다.
+  UV는 SketchUp(좌하단 원점) → glTF(좌상단 원점) 변환을 위해 V를 뒤집는다.
+  샘플러는 REPEAT — SketchUp 텍스처는 타일링이 기본이라 UV가 1을 크게 넘는다.
+
 알려진 한계
-  - **텍스처 미지원.** 프로브는 텍스처 파일명을 기록하지만 SketchUp 텍스처는 .skp 내부에
-    임베드되어 있어 그 경로에 파일이 없다. 현재는 baseColorFactor(단색)만 내보낸다.
-    텍스처는 프로브가 이미지를 추출하도록 고쳐야 해결된다
+  - **재질 상속 미해결.** 면에 재질이 없으면 SketchUp은 상위 인스턴스 재질을 쓴다.
+    glTF는 메시를 공유하므로 인스턴스별 재질 오버라이드를 표현할 수 없다. 제대로 하려면
+    메시를 재질별로 복제해야 하고 그러면 인스턴싱 이득이 사라진다
   - 레이어(태그)·persistent_id 는 glTF에 실을 자리가 없어 버려진다. 증분 동기화를
     구현할 때는 glTF가 아니라 자체 프로토콜을 써야 한다는 뜻이다
 """
@@ -59,6 +65,9 @@ class GltfBuilder(object):
         self.meshes = []
         self.nodes = []
         self.materials = []
+        self.images = []
+        self.textures = []
+        self.samplers = []
 
     # ---------------------------------------------------------------- 버퍼
 
@@ -112,12 +121,60 @@ class GltfBuilder(object):
         })
         return len(self.accessors) - 1
 
+    def add_image(self, data, mime):
+        """이미지 바이트를 버퍼에 임베드하고 glTF image 인덱스를 반환.
+
+        .glb 하나로 끝나도록 외부 참조 대신 임베드한다. RTXPT Assets 폴더에
+        텍스처 파일을 따로 배치할 필요가 없어진다.
+        """
+        self._align4()
+        offset = len(self.buffer)
+        self.buffer.extend(data)
+        # 이미지 bufferView 에는 target 을 주지 않는다 (glTF 사양)
+        self.bufferViews.append({
+            "buffer": 0, "byteOffset": offset, "byteLength": len(data),
+        })
+        self.images.append({"bufferView": len(self.bufferViews) - 1, "mimeType": mime})
+        return len(self.images) - 1
+
 
 # SketchUp 기본 면 색 근사. 재질을 지정하지 않은 면에 쓴다.
 DEFAULT_MATERIAL_KEY = "__iris_default__"
 
 
-def convert_materials(builder, src_materials):
+REPEAT = 10497
+LINEAR = 9729
+LINEAR_MIPMAP_LINEAR = 9987
+
+
+def load_texture(builder, tex, base_dir, cache):
+    """프로브가 뽑아둔 PNG를 glTF texture 인덱스로. 실패하면 None."""
+    rel = (tex or {}).get("export")
+    if not rel:
+        return None
+    if rel in cache:
+        return cache[rel]
+
+    path = os.path.join(base_dir, rel.replace("/", os.sep))
+    if not os.path.isfile(path):
+        cache[rel] = None
+        return None
+    with open(path, "rb") as f:
+        data = f.read()
+
+    if not builder.samplers:
+        # SketchUp 텍스처는 타일링이 기본. UV가 1을 훨씬 넘으므로 REPEAT 필수.
+        builder.samplers.append({
+            "magFilter": LINEAR, "minFilter": LINEAR_MIPMAP_LINEAR,
+            "wrapS": REPEAT, "wrapT": REPEAT,
+        })
+    img = builder.add_image(data, "image/png")
+    builder.textures.append({"sampler": 0, "source": img})
+    cache[rel] = len(builder.textures) - 1
+    return cache[rel]
+
+
+def convert_materials(builder, src_materials, base_dir=None):
     """프로브 머티리얼 → glTF 머티리얼. id → glTF 인덱스 맵을 반환.
 
     ⚠ 머티리얼이 **없는** 프리미티브를 위한 기본 머티리얼을 반드시 하나 넣는다.
@@ -135,6 +192,7 @@ def convert_materials(builder, src_materials):
         "doubleSided": True,
     })
     index_of[DEFAULT_MATERIAL_KEY] = 0
+    cache = {}
     for m in src_materials:
         color = m.get("color") or [1.0, 1.0, 1.0]
         alpha = m.get("alpha")
@@ -148,6 +206,14 @@ def convert_materials(builder, src_materials):
             },
             "doubleSided": True,   # SketchUp 면은 양면이 기본
         }
+
+        tex_idx = load_texture(builder, m.get("texture"), base_dir, cache) if base_dir else None
+        if tex_idx is not None:
+            gm["pbrMetallicRoughness"]["baseColorTexture"] = {"index": tex_idx, "texCoord": 0}
+            # image_rep(true) 로 뽑을 때 머티리얼 색이 이미 이미지에 반영되어 있다.
+            # 여기서 색을 또 곱하면 이중 적용된다.
+            gm["pbrMetallicRoughness"]["baseColorFactor"] = [1.0, 1.0, 1.0, alpha]
+
         if alpha < 0.999:
             gm["alphaMode"] = "BLEND"
         builder.materials.append(gm)
@@ -169,7 +235,12 @@ def build_mesh(builder, meshes, mat_index, name):
             attrs["NORMAL"] = builder.add_floats(nrm, 3)
         uvs = mb.get("uvs") or []
         if uvs and len(uvs) // 2 == len(pos) // 3:
-            attrs["TEXCOORD_0"] = builder.add_floats(uvs, 2)
+            # SketchUp UV 원점은 좌하단, glTF는 좌상단. V를 뒤집는다.
+            # 타일링(1 초과 값)이 있어도 1-v 는 그대로 성립한다.
+            flipped = list(uvs)
+            for i in range(1, len(flipped), 2):
+                flipped[i] = 1.0 - flipped[i]
+            attrs["TEXCOORD_0"] = builder.add_floats(flipped, 2)
 
         prim = {"attributes": attrs, "indices": builder.add_indices(idx), "mode": 4}
         mid = mb.get("material")
@@ -262,9 +333,9 @@ class NodeEmitter(object):
         return out
 
 
-def convert(doc):
+def convert(doc, base_dir=None):
     b = GltfBuilder()
-    mat_index = convert_materials(b, doc.get("materials") or [])
+    mat_index = convert_materials(b, doc.get("materials") or [], base_dir)
 
     emitter = NodeEmitter(b, doc, mat_index)
 
@@ -298,6 +369,10 @@ def convert(doc):
     }
     if b.materials:
         gltf["materials"] = b.materials
+    if b.images:
+        gltf["images"] = b.images
+        gltf["textures"] = b.textures
+        gltf["samplers"] = b.samplers
     return gltf, bytes(b.buffer), emitter
 
 
@@ -472,13 +547,16 @@ def main():
     if doc.get("format") != "iris.sketchup.scene":
         print("경고: format 이 'iris.sketchup.scene' 이 아닙니다: %r" % doc.get("format"))
 
-    gltf, blob, em = convert(doc)
+    # 텍스처 상대경로는 프로브 JSON 위치 기준이다.
+    base_dir = os.path.dirname(os.path.abspath(args.input))
+    gltf, blob, em = convert(doc, base_dir)
     write_glb(args.output, gltf, blob)
 
     n_prims = sum(len(m["primitives"]) for m in gltf["meshes"])
     print("생성: %s  (%.2f MB)" % (args.output, os.path.getsize(args.output) / 1048576.0))
-    print("  메시(정의) %d · 프리미티브 %d · 노드 %d · 머티리얼 %d"
-          % (len(gltf["meshes"]), n_prims, len(gltf["nodes"]), len(gltf.get("materials") or [])))
+    print("  메시(정의) %d · 프리미티브 %d · 노드 %d · 머티리얼 %d · 텍스처 %d"
+          % (len(gltf["meshes"]), n_prims, len(gltf["nodes"]),
+             len(gltf.get("materials") or []), len(gltf.get("textures") or [])))
     stats = doc.get("stats") or {}
     if stats:
         print("  원본 통계: 면 %s · 삼각형 %s · 정의 %s · 인스턴스 %s"

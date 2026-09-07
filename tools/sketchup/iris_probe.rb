@@ -46,7 +46,7 @@ module IRIS
 
       # limit: 삼각형 예산. 초과하면 즉시 중단하고 거기까지의 통계만 낸다.
       #        대형 모델에서 "끝나긴 하는가"를 먼저 확인할 때 쓴다.
-      def run(dump: true, out_dir: nil, pretty: false, limit: nil)
+      def run(dump: true, out_dir: nil, pretty: false, limit: nil, textures: true)
         model = Sketchup.active_model
         unless model
           puts '[IRIS] 활성 모델이 없습니다.'
@@ -56,6 +56,18 @@ module IRIS
         reset!
         @limit = limit
         t0 = Time.now
+
+        # 텍스처는 지오메트리 수집 중에 뽑히므로 디렉터리를 먼저 만들어 둔다.
+        if textures
+          begin
+            @texture_dir = File.join(out_dir || default_out_dir, 'textures')
+            FileUtils.mkdir_p(@texture_dir)
+          rescue StandardError => e
+            puts "텍스처 폴더 생성 실패, 텍스처 없이 진행합니다: #{e.message}"
+            @texture_dir = nil
+          end
+        end
+
         @caps = probe_capabilities(model)
 
         scene = nil
@@ -388,12 +400,50 @@ module IRIS
           'type'    => (mat.materialType rescue nil),  # 0 solid / 1 textured / 2 colorized
           'texture' => tex ? {
             'file'     => (tex.filename rescue nil),
+            # 실제로 꺼낸 이미지의 상대경로. .skp 안에 임베드된 것을 파일로 뽑아낸 것이라
+            # 'file'(원본 파일명)과 달리 **실제로 존재하는 경로**다.
+            'export'   => export_texture(tex, key),
             'width_m'  => ((tex.width * INCH_TO_M) rescue nil),
             'height_m' => ((tex.height * INCH_TO_M) rescue nil),
             'pixels'   => [(tex.image_width rescue nil), (tex.image_height rescue nil)],
           } : nil,
         }
         key
+      end
+
+      # SketchUp 텍스처는 .skp 내부에 임베드되어 있어 `texture.filename` 경로에는
+      # 파일이 없다. ImageRep(2018+)으로 꺼내 PNG로 저장한다.
+      #
+      # image_rep(true) 는 머티리얼 색으로 착색된(colorized) 결과를 준다. SketchUp은
+      # 같은 이미지에 색을 입혀 여러 재질을 만들 수 있으므로, 재질별로 따로 뽑아야
+      # 화면에서 본 것과 같아진다.
+      def export_texture(tex, key)
+        return nil unless @texture_dir
+
+        file = "#{key}.png"
+        path = File.join(@texture_dir, file)
+        rel  = "textures/#{file}"
+        return rel if File.exist?(path)
+
+        begin
+          rep = tex.image_rep(true)
+          # 저장 메서드 이름이 버전에 따라 다르다. SketchUp 2026 은 save_file.
+          # 이름을 추측하지 않고 있는 것을 찾아 쓴다.
+          if rep.respond_to?(:save_file)
+            rep.save_file(path)
+          elsif rep.respond_to?(:save_as)
+            rep.save_as(path)
+          else
+            avail = (rep.methods - Object.instance_methods).sort.join(', ')
+            raise "ImageRep에 저장 메서드가 없습니다. 사용 가능: #{avail}"
+          end
+          @stats['textures_exported'] += 1
+          rel
+        rescue StandardError => e
+          @stats['texture_errors'] += 1
+          @texture_error_msg ||= e.message
+          nil
+        end
       end
 
       def transform_to_a(tr)
@@ -492,6 +542,8 @@ module IRIS
         w << ' [3] 머티리얼'
         w << "     고유 머티리얼 : #{@materials.size}"
         w << "     텍스처 보유   : #{@materials.values.count { |m| m['texture'] }}"
+        w << "     텍스처 추출   : #{@stats['textures_exported']} (실패 #{@stats['texture_errors']})"
+        w << "     추출 실패 사유: #{@texture_error_msg}" if @texture_error_msg
         w << ''
         w << ' [4] 증분 동기화 가능성'
         w << "     persistent_id    : #{@caps['persistent_id'] ? 'O — GUID 델타 추적 가능' : 'X — 추적 불가'}"
@@ -548,6 +600,7 @@ module IRIS
         @stats = {
           'faces' => 0, 'triangles' => 0, 'vertices' => 0, 'instances' => 0,
           'definitions' => 0, 'face_errors' => 0, 'groups_skipped' => 0,
+          'textures_exported' => 0, 'texture_errors' => 0,
         }
         @definitions    = {}
         @materials      = {}
@@ -558,6 +611,8 @@ module IRIS
         @truncated      = false
         @limit          = nil
         @scene          = nil
+        @texture_dir    = nil
+        @texture_error_msg = nil
       end
 
       def safe_pid(e)
