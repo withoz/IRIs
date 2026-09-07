@@ -5,7 +5,8 @@
 #
 # 사용법 — SketchUp Ruby 콘솔 (창 > Ruby 콘솔):
 #   load 'E:/IRIS/tools/sketchup/iris_probe.rb'
-#   IRIS::Probe.run                 # 측정 + JSON 덤프
+#   IRIS::Probe.run                 # 측정 + 바이너리 덤프 (.irisb)
+#   IRIS::Probe.run(format: :json)  # JSON 덤프 (호환/디버깅용, 느림)
 #   IRIS::Probe.run(dump: false)    # 측정만
 #   IRIS::Probe.watch               # 변경 감지 옵저버 부착 (증분 동기화 테스트)
 #   IRIS::Probe.flush               # 감지된 델타 출력
@@ -172,7 +173,8 @@ module IRIS
 
       # limit: 삼각형 예산. 초과하면 즉시 중단하고 거기까지의 통계만 낸다.
       #        대형 모델에서 "끝나긴 하는가"를 먼저 확인할 때 쓴다.
-      def run(dump: true, out_dir: nil, pretty: false, limit: nil, textures: true, cache: true)
+      def run(dump: true, out_dir: nil, pretty: false, limit: nil, textures: true, cache: true,
+              format: :binary)
         model = Sketchup.active_model
         unless model
           puts '[IRIS] 활성 모델이 없습니다.'
@@ -225,12 +227,20 @@ module IRIS
         if dump && scene
           dir = out_dir || default_out_dir
           FileUtils.mkdir_p(dir)
-          path = File.join(dir, "#{sanitize(model.title)}.iris.json")
+          base = sanitize(model.title)
           t1 = Time.now
-          # 정점 배열이 그대로 텍스트가 되므로 기본은 compact.
-          # 눈으로 확인할 때만 pretty: true.
-          json = pretty ? JSON.pretty_generate(scene) : JSON.generate(scene)
-          File.open(path, 'w:UTF-8') { |f| f.write(json) }
+          if format == :binary
+            path = File.join(dir, "#{base}.irisb")
+            @write_sizes = write_binary(path, scene)
+          else
+            path = File.join(dir, "#{base}.iris.json")
+            # 정점 배열이 그대로 텍스트가 되므로 기본은 compact.
+            # 눈으로 확인할 때만 pretty: true.
+            json = pretty ? JSON.pretty_generate(scene) : JSON.generate(scene)
+            File.open(path, 'w:UTF-8') { |f| f.write(json) }
+            @write_sizes = nil
+          end
+          @write_format = format
           @write_elapsed = Time.now - t1
         end
 
@@ -251,6 +261,91 @@ module IRIS
       # run이 만든 씬 해시. 콘솔에 그대로 찍지 말 것.
       def last_scene
         @scene
+      end
+
+      # -------------------------------------------------------- 바이너리 직렬화
+      #
+      # 캐싱을 넣은 뒤 병목이 추출(3.4%)에서 직렬화(96.6%)로 옮겨갔다.
+      # JSON 140.6 MB / 7.6초가 유일한 병목이다.
+      #
+      # 구조는 GLB와 같다 — 헤더 + JSON 매니페스트 + 바이너리 블롭.
+      # 구조·메타데이터(정의 트리, 머티리얼, 인스턴스, 시점)는 작아서 JSON으로 두고,
+      # 지오메트리 배열만 블롭으로 뺀다. 디버깅 가능성을 잃지 않으면서 크기와
+      # 시간을 줄이는 절충이다.
+      #
+      # 정점 속성을 인터리브하지 않고 분리 블롭으로 두는 이유: 프로브가 이미
+      # 분리된 배열을 갖고 있어 재배열 비용이 0이고, glTF도 속성별 접근자를 쓴다.
+
+      MAGIC   = 'IRISSCN1'   # 8 bytes
+      FMT_VER = 1
+
+      # scene 해시를 [manifest_hash, binary_string] 으로 나눈다.
+      # scene 자체는 건드리지 않는다 (last_scene 이 계속 유효해야 한다).
+      def split_binary(scene)
+        blob = +''.b
+        man  = {}
+
+        scene.each do |k, v|
+          man[k] = if k == 'definitions'
+                     v.each_with_object({}) { |(dk, d), h| h[dk] = strip_def(d, blob) }
+                   elsif k == 'root'
+                     { 'meshes' => v['meshes'].map { |mb| strip_mesh(mb, blob) },
+                       'children' => v['children'] }
+                   else
+                     v
+                   end
+        end
+        man['binary'] = { 'layout' => 'separate', 'bytes' => blob.bytesize }
+        [man, blob]
+      end
+
+      def strip_def(d, blob)
+        out = d.dup
+        out['meshes'] = (d['meshes'] || []).map { |mb| strip_mesh(mb, blob) }
+        out
+      end
+
+      # 배열을 블롭으로 옮기고 {off, count} 참조만 남긴다.
+      def strip_mesh(mb, blob)
+        {
+          'material'  => mb['material'],
+          'positions' => push_f32(blob, mb['positions']),
+          'normals'   => push_f32(blob, mb['normals']),
+          'uvs'       => push_f32(blob, mb['uvs']),
+          'indices'   => push_u32(blob, mb['indices']),
+        }
+      end
+
+      # 'e' = little-endian f32, 'V' = little-endian u32.
+      # pack 은 C 구현이라 요소당 Ruby 호출이 없다 — 이것이 JSON 대비 이득의 실체다.
+      def push_f32(blob, arr)
+        return nil if arr.nil? || arr.empty?
+        off = blob.bytesize
+        blob << arr.pack('e*')
+        { 'off' => off, 'count' => arr.length }
+      end
+
+      def push_u32(blob, arr)
+        return nil if arr.nil? || arr.empty?
+        off = blob.bytesize
+        blob << arr.pack('V*')
+        { 'off' => off, 'count' => arr.length }
+      end
+
+      def write_binary(path, scene)
+        man, blob = split_binary(scene)
+        json = JSON.generate(man).b
+        pad  = (8 - (json.bytesize % 8)) % 8
+        json << (' '.b * pad)
+
+        File.open(path, 'wb') do |f|
+          f.write(MAGIC)
+          f.write([FMT_VER, 0].pack('VV'))
+          f.write([json.bytesize, blob.bytesize].pack('Q<Q<'))
+          f.write(json)
+          f.write(blob)
+        end
+        { json: json.bytesize, bin: blob.bytesize }
       end
 
       # ------------------------------------------------------------ 캐시 제어
@@ -824,7 +919,14 @@ module IRIS
         w << format('     추출 시간     : %.1f ms', ms)
         w << format('     처리량        : %.0f 삼각형/초', rate)
         w << format('     1000만 삼각형 환산 : %.1f 초', 10_000_000.0 / rate) if rate > 0
-        w << format('     JSON 기록     : %.1f ms', @write_elapsed * 1000.0) if @write_elapsed
+        if @write_elapsed
+          label = @write_format == :binary ? '바이너리 기록' : 'JSON 기록   '
+          w << format('     %s : %.1f ms', label, @write_elapsed * 1000.0)
+          if @write_sizes
+            w << format('       매니페스트  : %.2f MB', @write_sizes[:json] / 1048576.0)
+            w << format('       지오메트리  : %.2f MB', @write_sizes[:bin] / 1048576.0)
+          end
+        end
         if path && File.exist?(path)
           w << format('     덤프 파일     : %s (%.1f MB)', path, File.size(path) / 1048576.0)
         end
@@ -884,6 +986,8 @@ module IRIS
         @scene          = nil
         @texture_dir    = nil
         @texture_rel    = nil
+        @write_sizes    = nil
+        @write_format   = nil
         # @cache 는 여기서 지우지 않는다 — 세션 동안 유지되는 것이 목적이다
         @texture_error_msg = nil
       end

@@ -8,7 +8,10 @@ IRIS — SketchUp 프로브 JSON → glTF(.glb) 변환기
 읽을 수 있는 glTF 2.0으로 바꾼다.
 
 사용법
-  python iris_json_to_gltf.py <probe.iris.json> <out.glb> [--scene-json <out.scene.json>]
+  python iris_json_to_gltf.py <probe.irisb|probe.iris.json> <out.glb> [--scene-json <out.scene.json>]
+
+  `.irisb`(바이너리)와 `.iris.json` 둘 다 읽는다. 바이너리는 지오메트리를 바이트
+  그대로 glTF 버퍼에 옮기므로 파이썬 실수 리스트를 거치지 않는다.
 
   --scene-json 을 주면 RTXPT용 .scene.json 도 함께 만든다. 둘 다 RTXPT의 Assets 폴더
   아래에 두고 RTXPT를 재시작하면 씬 목록에 나타난다.
@@ -41,12 +44,13 @@ IRIS — SketchUp 프로브 JSON → glTF(.glb) 변환기
 """
 
 import argparse
-import base64
 import io
 import json
 import os
 import struct
 import sys
+
+import numpy as np   # 지오메트리를 바이트 그대로 다루기 위해 필수
 
 GLTF_FLOAT = 5126
 GLTF_UINT32 = 5125
@@ -84,39 +88,34 @@ class GltfBuilder(object):
         })
         return len(self.bufferViews) - 1
 
-    def add_floats(self, values, comp_count, with_minmax=False):
-        """values: flat float list. comp_count: 3(VEC3) 또는 2(VEC2)."""
-        data = struct.pack("<%df" % len(values), *values)
-        view = self._add_view(data, ARRAY_BUFFER)
+    def add_floats(self, arr, comp_count, with_minmax=False):
+        """arr: numpy f32 평면 배열. comp_count: 3(VEC3) 또는 2(VEC2).
+
+        바이트를 그대로 버퍼에 붙인다 — 요소별 파이썬 루프가 없다.
+        """
+        a = np.ascontiguousarray(arr, dtype="<f4")
+        view = self._add_view(a.tobytes(), ARRAY_BUFFER)
         acc = {
             "bufferView": view,
             "componentType": GLTF_FLOAT,
-            "count": len(values) // comp_count,
+            "count": int(a.size) // comp_count,
             "type": {2: "VEC2", 3: "VEC3"}[comp_count],
         }
         if with_minmax:
             # glTF 사양상 POSITION 접근자는 min/max 필수
-            mins = [float("inf")] * comp_count
-            maxs = [float("-inf")] * comp_count
-            for i in range(0, len(values), comp_count):
-                for c in range(comp_count):
-                    v = values[i + c]
-                    if v < mins[c]:
-                        mins[c] = v
-                    if v > maxs[c]:
-                        maxs[c] = v
-            acc["min"] = mins
-            acc["max"] = maxs
+            r = a.reshape(-1, comp_count)
+            acc["min"] = [float(v) for v in r.min(axis=0)]
+            acc["max"] = [float(v) for v in r.max(axis=0)]
         self.accessors.append(acc)
         return len(self.accessors) - 1
 
-    def add_indices(self, values):
-        data = struct.pack("<%dI" % len(values), *values)
-        view = self._add_view(data, ELEMENT_ARRAY_BUFFER)
+    def add_indices(self, arr):
+        a = np.ascontiguousarray(arr, dtype="<u4")
+        view = self._add_view(a.tobytes(), ELEMENT_ARRAY_BUFFER)
         self.accessors.append({
             "bufferView": view,
             "componentType": GLTF_UINT32,
-            "count": len(values),
+            "count": int(a.size),
             "type": "SCALAR",
         })
         return len(self.accessors) - 1
@@ -221,26 +220,27 @@ def convert_materials(builder, src_materials, base_dir=None):
     return index_of
 
 
-def build_mesh(builder, meshes, mat_index, name):
+def build_mesh(builder, doc, meshes, mat_index, name):
     """프로브 메시 버킷 목록 → glTF mesh. 비어 있으면 None."""
     primitives = []
     for mb in meshes:
-        pos = mb.get("positions") or []
-        idx = mb.get("indices") or []
-        if not pos or not idx:
+        pos = as_array(doc, mb.get("positions"), "<f4")
+        idx = as_array(doc, mb.get("indices"), "<u4")
+        if pos is None or idx is None or pos.size == 0 or idx.size == 0:
             continue
         attrs = {"POSITION": builder.add_floats(pos, 3, with_minmax=True)}
-        nrm = mb.get("normals") or []
-        if len(nrm) == len(pos):
+        nrm = as_array(doc, mb.get("normals"), "<f4")
+        if nrm is not None and nrm.size == pos.size:
             attrs["NORMAL"] = builder.add_floats(nrm, 3)
-        uvs = mb.get("uvs") or []
-        if uvs and len(uvs) // 2 == len(pos) // 3:
+        uvs = as_array(doc, mb.get("uvs"), "<f4")
+        if uvs is not None and uvs.size // 2 == pos.size // 3:
             # SketchUp UV 원점은 좌하단, glTF는 좌상단. V를 뒤집는다.
             # 타일링(1 초과 값)이 있어도 1-v 는 그대로 성립한다.
-            flipped = list(uvs)
-            for i in range(1, len(flipped), 2):
-                flipped[i] = 1.0 - flipped[i]
-            attrs["TEXCOORD_0"] = builder.add_floats(flipped, 2)
+            # 뒤집기는 f64 로 계산한 뒤 f32 로 내린다. f32 안에서 빼면 1 ULP가
+            # 어긋나 JSON 경로와 바이너리 경로의 결과가 갈린다.
+            flipped = uvs.astype("<f8").reshape(-1, 2)
+            flipped[:, 1] = 1.0 - flipped[:, 1]
+            attrs["TEXCOORD_0"] = builder.add_floats(flipped.ravel(), 2)
 
         prim = {"attributes": attrs, "indices": builder.add_indices(idx), "mode": 4}
         mid = mb.get("material")
@@ -291,7 +291,7 @@ class NodeEmitter(object):
         # 자리 예약 = 순환 참조 가드 (프로브도 같은 방식으로 막는다)
         self.def_mesh[def_id] = None
         self.def_mesh[def_id] = build_mesh(
-            self.b, d.get("meshes") or [], self.mat_index, d.get("name") or def_id)
+            self.b, self.doc, d.get("meshes") or [], self.mat_index, d.get("name") or def_id)
         return self.def_mesh[def_id]
 
     def emit_children(self, children, depth=0):
@@ -343,7 +343,7 @@ def convert(doc, base_dir=None):
     top = emitter.emit_children(root.get("children") or [])
 
     # 최상위에 흩어져 있는 면들 (그룹/컴포넌트에 속하지 않은 지오메트리)
-    loose = build_mesh(b, root.get("meshes") or [], mat_index, "loose_geometry")
+    loose = build_mesh(b, doc, root.get("meshes") or [], mat_index, "loose_geometry")
     if loose is not None:
         b.nodes.append({"name": "loose_geometry", "mesh": loose})
         top.append(len(b.nodes) - 1)
@@ -374,6 +374,50 @@ def convert(doc, base_dir=None):
         gltf["textures"] = b.textures
         gltf["samplers"] = b.samplers
     return gltf, bytes(b.buffer), emitter
+
+
+IRISB_MAGIC = b"IRISSCN1"
+
+
+def load_scene(path):
+    """`.irisb`(바이너리) 또는 `.iris.json` 을 읽어 doc 을 돌려준다.
+
+    바이너리는 GLB와 같은 구조다 — 32바이트 헤더 + JSON 매니페스트 + 블롭.
+    매니페스트의 메시 배열은 실제 값이 아니라 {off, count} 참조이며,
+    블롭은 doc['__blob__'] 에 담겨 온다.
+    """
+    with open(path, "rb") as f:
+        head = f.read(32)
+        if head[:8] == IRISB_MAGIC:
+            ver, _ = struct.unpack_from("<II", head, 8)
+            if ver != 1:
+                raise ValueError("지원하지 않는 .irisb 버전: %d" % ver)
+            jlen, blen = struct.unpack_from("<QQ", head, 16)
+            doc = json.loads(f.read(jlen).decode("utf-8"))
+            doc["__blob__"] = f.read(blen)
+            return doc
+
+    with io.open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def as_array(doc, val, dtype):
+    """메시 필드를 numpy 배열로. 바이너리 참조와 JSON 리스트를 모두 받는다."""
+    if val is None:
+        return None
+    if isinstance(val, dict):                       # 바이너리 {off, count}
+        blob = doc.get("__blob__")
+        if blob is None:
+            return None
+        return np.frombuffer(blob, dtype=dtype, count=val["count"], offset=val["off"])
+    if not val:
+        return None
+    # JSON 리스트의 원본은 double 이다. 여기서 f32 로 미리 내리면 이후 산술
+    # (UV 뒤집기)의 반올림이 바이너리 경로와 갈린다. 원본 정밀도를 유지하고
+    # 실제 내림은 버퍼에 쓸 때 한 번만 한다.
+    if np.dtype(dtype).kind == "f":
+        return np.asarray(val, dtype="<f8")
+    return np.asarray(val, dtype=dtype)
 
 
 def _mat_apply(m, p):
@@ -425,11 +469,14 @@ def scene_bounds(doc, percentile=None):
         if depth > 32:
             return
         for mb in node.get("meshes") or []:
-            pos = mb.get("positions") or []
+            pos = as_array(doc, mb.get("positions"), "<f4")
+            if pos is None or pos.size < 3:
+                continue
+            pts = pos.reshape(-1, 3)
             # 정점이 많으면 표본만 봐도 박스는 충분히 잡힌다
-            step = 3 * max(1, (len(pos) // 3) // 4000)
-            for i in range(0, len(pos) - 2, step):
-                acc(_mat_apply(xf, (pos[i], pos[i + 1], pos[i + 2])))
+            step = max(1, pts.shape[0] // 4000)
+            for p in pts[::step]:
+                acc(_mat_apply(xf, (float(p[0]), float(p[1]), float(p[2]))))
         for inst in node.get("children") or []:
             if inst.get("hidden"):
                 continue
@@ -605,7 +652,7 @@ def write_glb(path, gltf, blob):
 
 def main():
     ap = argparse.ArgumentParser(description="SketchUp 프로브 JSON을 glTF(.glb)로 변환")
-    ap.add_argument("input", help="프로브가 만든 .iris.json")
+    ap.add_argument("input", help="프로브가 만든 .irisb 또는 .iris.json")
     ap.add_argument("output", nargs="?", help="출력 .glb (--list-views 시 생략 가능)")
     ap.add_argument("--scene-json", help="RTXPT용 .scene.json 도 생성")
     ap.add_argument("--list-views", action="store_true",
@@ -618,8 +665,7 @@ def main():
                     help="환경광 큐브맵 (RTXPT Assets 기준 상대경로)")
     args = ap.parse_args()
 
-    with io.open(args.input, encoding="utf-8") as f:
-        doc = json.load(f)
+    doc = load_scene(args.input)
 
     if not args.list_views and not args.output:
         print("출력 경로가 필요합니다 (또는 --list-views)")
