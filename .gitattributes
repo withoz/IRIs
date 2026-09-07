@@ -1,0 +1,13 @@
+# 저장소 내부는 LF로 정규화, 작업 디렉토리는 OS 기본값
+* text=auto
+
+# 바이너리 — 변환 금지
+*.png  binary
+*.jpg  binary
+*.hdr  binary
+*.exr  binary
+*.ifc  binary
+*.skp  binary
+*.rvt  binary
+*.fbx  binary
+*.spv  binary
