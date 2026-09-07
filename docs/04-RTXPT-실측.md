@@ -246,6 +246,13 @@ B의 오차가 어디서 오는지 나눠 봤습니다.
 **말하는 것**: RTXPT v1.8.1에서 DLSS-RR 경로가 속도·품질 양쪽에서 우월합니다.
 자료집 5장의 권장 조합을 그대로 쓸 이유가 없습니다.
 
+**⚠ NRD가 최선의 설정이 아니었습니다 (2026-09-07 추가).** NRD-Sample README에서
+NVIDIA는 *"효과적인 NRD vs DLSS-RR 비교에는 NRD의 SH(구면조화) 모드가 필요하다"* 고
+밝힙니다. 그런데 RTXPT는 `REBLUR/RELAX_DIFFUSE_SPECULAR` 를 쓰며 `_SH` 변형이
+아닙니다(`Rtxpt/Sample.cpp:2571`). NRD-Sample의 기본값도 `NRD_MODE NORMAL` 입니다.
+따라서 위 비교는 **"RTXPT 기본 설정 기준"** 으로 유효하고 **"NRD의 최선 대 DLSS-RR"**
+은 아닙니다. 상세는 [00-진행상황.md](00-진행상황.md) 과제 3 절 참조.
+
 **말하지 않는 것**: ReSTIR 알고리즘이 열등하다는 뜻이 **아닙니다.** NVIDIA 자신이
 "not tuned to work with DLSS-RR"이라고 명시한 조합을 켠 것이고, RTXPT의 특정 구현·
 특정 버전 이야기입니다. RTXDI를 단독으로 제대로 통합하면 결과가 다를 수 있습니다.
