@@ -164,6 +164,30 @@ module IRIS
       # 여기에도 적어야 하고, 적으면 옛 캐시가 자동으로 버려집니다.
       CACHE_FIELDS = %i[gen kids esize meshes mats verts tris faces seen].freeze
 
+      # 모델이 바뀌면 캐시를 통째로 버립니다.
+      #
+      # 캐시 키가 entityID 인데 **모델마다 다시 매겨집니다.** 다른 파일을 열면
+      # 같은 번호가 전혀 다른 정의를 가리킵니다. 그대로 두면 엉뚱한 지오메트리가
+      # 되살아나고, 오류는 나지 않습니다.
+      #
+      # 지금까지는 주석으로 "모델을 바꾸기 전에 cache_clear 하십시오"라고만
+      # 적어 두었습니다. 사람이 기억해야 하는 안전장치는 안전장치가 아닙니다.
+      def check_model(model)
+        key = model_key(model)
+        return if key == @model_key
+        unless @model_key.nil?
+          puts "[IRIS] 모델이 바뀌었습니다 — 정의 캐시를 비웁니다"
+        end
+        @entries = {}
+        detach_all rescue nil
+        @model_key = key
+      end
+
+      def model_key(model)
+        path = (model.path.to_s rescue '')
+        path.empty? ? "guid:#{(model.guid rescue model.object_id)}" : "path:#{path}"
+      end
+
       def fetch(defn)
         e = @entries[defn.entityID]
         return nil if e.nil? || e[:dirty]
@@ -338,6 +362,8 @@ module IRIS
           # 클래스 변수(@@)를 쓰면 싱글턴 클래스에 붙어 의도와 달라진다.
           @def_cache ||= DefCache.new
           @cache = @def_cache
+          # 다른 파일을 열었으면 여기서 캐시가 스스로 비워집니다.
+          @cache.check_model(model)
           @cache.attach_materials(model)
         else
           @cache = nil

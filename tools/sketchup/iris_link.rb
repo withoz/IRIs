@@ -70,6 +70,12 @@ module IRIS
         raise
       end
 
+      # 어떤 파일을 보고 있는가. 저장 전이면 경로가 없으므로 guid 로.
+      def model_key(model)
+        path = (model.path.to_s rescue '')
+        path.empty? ? "guid:#{(model.guid rescue model.object_id)}" : "path:#{path}"
+      end
+
       def log_failure(e)
         dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
         require 'fileutils'
@@ -88,6 +94,22 @@ module IRIS
         model = Sketchup.active_model
         return say('활성 모델이 없습니다.') unless model
         return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
+
+        # **모델이 바뀌면 델타를 처음부터 다시 시작합니다.**
+        #
+        # @sent_gen 은 정의 id(entityID 기반)로 "렌더러가 이미 가졌다"를
+        # 기억합니다. 그런데 entityID 는 **모델마다 다시 매겨집니다.** 다른
+        # 파일을 열면 같은 번호가 전혀 다른 정의를 가리키고, 그러면 보내야 할
+        # 지오메트리를 '이미 있다'고 건너뜁니다 — 물체가 사라지고 오류는
+        # 나지 않습니다.
+        key = model_key(model)
+        if @model_key && key != @model_key
+          say '모델이 바뀌었습니다 — 전체를 다시 보냅니다.'
+          @sent_gen = {}
+          @last_sig = nil
+          full = true
+        end
+        @model_key = key
 
         t_extract0 = Time.now
         IRIS::Probe.run(dump: false, textures: textures, cache: true)
