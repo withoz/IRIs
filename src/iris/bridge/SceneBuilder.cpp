@@ -663,6 +663,25 @@ namespace iris::bridge
     {
         if (!src.sun.present)
             return;
+        // 고도. toward.z 는 Z-up 모델 좌표이므로 그대로 sin(고도) 입니다.
+        //
+        // 부호 확인(2026-09-08): SketchUp 이 준 -0.363(고도 -21.3도)을 위경도와
+        // 시각으로 따로 계산한 태양 고도(-20.0도)와 대조했습니다. 일치합니다 —
+        // **SunDirection 은 태양을 향하는 방향**이 맞습니다.
+        const float elevationDeg =
+            std::asin(std::clamp(src.sun.toward[2], -1.0f, 1.0f)) * 180.0f / dm::PI_f;
+        stats.sunElevationDeg = elevationDeg;
+
+        if (elevationDeg <= 0.0f)
+        {
+            // 지평선 아래입니다. 그대로 넣으면 **땅 밑에서 빛이 올라옵니다.**
+            // 조용히 넣지 않는 것보다, 왜 태양이 없는지 말해 주는 편이 낫습니다.
+            stats.warnings.push_back(
+                "태양이 지평선 아래입니다 (고도 " + std::to_string((int)elevationDeg) +
+                "도) — 호스트의 그림자 시각이 밤입니다");
+            return;
+        }
+
         if (!src.sun.shadows)
         {
             // 호스트에서 그림자를 꺼 두었으면 태양도 넣지 않습니다. 설계자가

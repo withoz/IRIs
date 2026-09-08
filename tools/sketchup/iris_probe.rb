@@ -1433,9 +1433,14 @@ module IRIS
         w << ''
         w << "     저장된 시점   : #{(@scene_views_list || []).size}"
         if @sun
-          w << format('     태양          : 방향 (%.3f %.3f %.3f) · 그림자 %s · %s',
-                      @sun['toward'][0], @sun['toward'][1], @sun['toward'][2],
-                      @sun['shadows'] ? 'O' : 'X', @sun['time'].to_s[0, 24])
+          z = @sun['toward'][2]
+          elev = Math.asin([[z, -1.0].max, 1.0].min) * 180.0 / Math::PI
+          w << format('     태양          : 고도 %+.1f도 · 그림자 %s · %s',
+                      elev, @sun['shadows'] ? 'O' : 'X', @sun['time'].to_s[0, 24])
+          w << format('                     위치 %s (위도 %.2f 경도 %.2f)',
+                      @sun['city'].to_s, @sun['latitude'].to_f, @sun['longitude'].to_f)
+          w << '                     ⚠ 지평선 아래입니다 — 햇빛이 없습니다' if elev <= 0
+          w << '                     ⚠ 호스트에서 그림자가 꺼져 있습니다' unless @sun['shadows']
         else
           w << "     태양          : 없음#{@sun_error ? " (#{@sun_error})" : ''}"
         end
