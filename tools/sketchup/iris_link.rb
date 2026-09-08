@@ -52,7 +52,7 @@ module IRIS
       #
       # 캐시가 살아 있으면 바뀐 정의만 다시 추출합니다 — 실측 47배 차이입니다
       # (docs/05-씬-델타-프로토콜.md 7절).
-      def sync(pipe: 'iris', textures: true)
+      def sync(pipe: 'iris', textures: true, force: false)
         model = Sketchup.active_model
         return say('활성 모델이 없습니다.') unless model
         return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
@@ -67,9 +67,27 @@ module IRIS
         bytes, sizes = IRIS::Probe.pack_binary(scene)
         pack_ms = (Time.now - t_pack0) * 1000.0
 
+        # **결과로 판단합니다.** 캐시가 "바뀌었다"고 해도 만들어진 바이트가
+        # 지난번과 같으면 보내지 않습니다.
+        #
+        # 옵저버는 우리가 읽는 동작에도 반응할 수 있고, 그러면 편집이 없는데도
+        # 매초 동기화가 돌아 렌더러가 누적을 계속 초기화합니다 — 화면이 영원히
+        # 수렴하지 않습니다. 무효화가 왜 생겼는지와 무관하게, 내용이 같으면
+        # 보내지 않는 것이 옳습니다.
+        #
+        # 비교는 memcmp 라 36 MB 에 수 ms 입니다. 전송(47 ms)보다 훨씬 쌉니다.
+        if !force && @last_bytes && @last_bytes == bytes
+          @skipped = @skipped.to_i + 1
+          say format('변경 없음 — 보내지 않습니다 (추출 %.0f ms · 연속 %d회)',
+                     extract_ms, @skipped)
+          return true
+        end
+        @skipped = 0
+
         t_send0 = Time.now
         ok = transmit(pipe, bytes)
         send_ms = (Time.now - t_send0) * 1000.0
+        @last_bytes = bytes if ok
 
         st = scene['stats'] || {}
         say ''
