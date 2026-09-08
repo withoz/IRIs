@@ -90,6 +90,29 @@ namespace iris::protocol
             return m.isBool() ? m.asBool() : fallback;
         }
 
+        float GetFloat(const Json::Value& v, const char* key, float fallback = 0.0f)
+        {
+            const Json::Value& m = v[key];
+            if (!m.isNumeric())
+                return fallback;
+            const double d = m.asDouble();
+            return std::isfinite(d) ? static_cast<float>(d) : fallback;
+        }
+
+        float Clamp01(float v)
+        {
+            if (!(v > 0.0f)) return 0.0f;   // NaN 도 여기서 걸립니다
+            return v > 1.0f ? 1.0f : v;
+        }
+
+        // 유한하고 양수인 값만. 조명 세기에 NaN 이나 음수가 들어가면
+        // 광원 선택 가중치가 무너져 화면 전체가 검거나 폭주합니다.
+        float PositiveFinite(const Json::Value& v, const char* key)
+        {
+            const float f = GetFloat(v, key, 0.0f);
+            return (f > 0.0f && std::isfinite(f)) ? f : 0.0f;
+        }
+
         template <size_t N>
         bool ReadVec(const Json::Value& v, std::array<float, N>& out)
         {
@@ -102,6 +125,42 @@ namespace iris::protocol
                 out[i] = static_cast<float>(v[i].asDouble());
             }
             return true;
+        }
+
+        // 광원 설정. 없거나 알 수 없는 종류면 kind 를 None 으로 둡니다 —
+        // 그러면 씬 구축이 이 정의를 평범한 (빈) 정의로 취급합니다.
+        void ReadLight(const Json::Value& lv, LightSpec& out)
+        {
+            if (!lv.isObject())
+                return;
+
+            const std::string kind = GetString(lv, "kind");
+            if      (kind == "point")  out.kind = LightSpec::Kind::Point;
+            else if (kind == "spot")   out.kind = LightSpec::Kind::Spot;
+            else if (kind == "rect")   out.kind = LightSpec::Kind::Rect;
+            else if (kind == "linear") out.kind = LightSpec::Kind::Linear;
+            else return;
+
+            ReadVec(lv["color"], out.color);
+            out.lumens    = PositiveFinite(lv, "lumens");
+            out.intensity = PositiveFinite(lv, "intensity");
+            out.radius    = PositiveFinite(lv, "radius");
+            out.width     = PositiveFinite(lv, "width");
+            out.length    = PositiveFinite(lv, "length");
+            out.radiance  = PositiveFinite(lv, "radiance");
+            out.iesFile   = GetString(lv, "ies_file");
+
+            // 반각. 0 이나 90 이상은 원뿔이 아니므로 안전한 범위로 좁힙니다.
+            const float outer = GetFloat(lv, "outer", 45.0f);
+            const float inner = GetFloat(lv, "inner", outer * 0.5f);
+            out.outerDeg = (std::isfinite(outer) && outer > 0.5f && outer < 89.5f) ? outer : 45.0f;
+            out.innerDeg = (std::isfinite(inner) && inner >= 0.0f && inner <= out.outerDeg)
+                         ? inner : out.outerDeg * 0.5f;
+
+            // 세기가 없으면 광원이 아닙니다. 종류별로 필요한 값이 다릅니다.
+            const bool analytic = out.kind == LightSpec::Kind::Point || out.kind == LightSpec::Kind::Spot;
+            if (analytic ? (out.intensity <= 0.0f) : (out.radiance <= 0.0f || out.length <= 0.0f))
+                out.kind = LightSpec::Kind::None;
         }
 
         // { "off": n, "count": n } 을 읽고 블롭 범위 안인지 확인합니다.
@@ -412,6 +471,33 @@ namespace iris::protocol
                 m.texture.widthM     = GetDouble(t, "width_m");
                 m.texture.heightM    = GetDouble(t, "height_m");
             }
+
+            // Enscape 가 남긴 PBR. 없으면 present=false 로 두고 기존 기본값을 씁니다.
+            const Json::Value& pv = mv["pbr"];
+            if (pv.isObject())
+            {
+                MaterialPbr& pbr = m.pbr;
+                pbr.present   = true;
+                pbr.etype     = GetString(pv, "etype", "GENERIC");
+                pbr.roughness = Clamp01(GetFloat(pv, "roughness", 0.5f));
+                pbr.metalness = Clamp01(GetFloat(pv, "metalness", 0.0f));
+                pbr.specular  = Clamp01(GetFloat(pv, "specular", 0.5f));
+                pbr.opacity   = Clamp01(GetFloat(pv, "opacity", 1.0f));
+                pbr.ior       = GetFloat(pv, "ior", 0.0f);
+                pbr.bump      = GetFloat(pv, "bump", 0.0f);
+                pbr.normalIntensity = GetFloat(pv, "normal_intensity", 0.0f);
+                pbr.bumpType  = GetString(pv, "bump_type");
+                pbr.solidGlass = GetBool(pv, "solid_glass");
+
+                const float cd = GetFloat(pv, "emissive_cd", 0.0f);
+                if (cd > 0.0f && std::isfinite(cd))
+                {
+                    pbr.hasEmissive = true;
+                    pbr.emissiveCd  = cd;
+                    ReadVec(pv["emissive"], pbr.emissive);
+                }
+            }
+
             out.materials.push_back(std::move(m));
         }
 
@@ -456,6 +542,7 @@ namespace iris::protocol
                 d.persistentId  = GetInt64(dv, "persistent_id");
                 d.isGroup       = GetBool(dv, "is_group");
                 d.instanceCount = static_cast<uint32_t>(GetInt64(dv, "instance_count"));
+                ReadLight(dv["light"], d.light);
 
                 if (!parser.ReadDefinitionBody(dv, "정의 " + key, d))
                 {

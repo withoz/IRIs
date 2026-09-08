@@ -59,6 +59,34 @@ namespace iris::protocol
         bool                 hidden = false;
     };
 
+    // Enscape 가 SketchUp 속성 사전에 남긴 광원 설정.
+    //
+    // SketchUp 자체는 조명을 주지 않습니다. 하지만 Enscape 로 작업된 모델에는
+    // 설계자가 정해 둔 세기·크기·IES 배광이 그대로 들어 있습니다. 프로브가
+    // 그것을 읽어 여기로 넘깁니다 — 추측한 값보다 언제나 낫습니다.
+    //
+    // 위치와 방향은 여기 없습니다. 광원은 **프록시 컴포넌트의 인스턴스**이고,
+    // 배치는 그 인스턴스의 변환에서 나옵니다. 씬 그래프가 합성하므로 노드에
+    // 붙이기만 하면 됩니다.
+    struct LightSpec
+    {
+        enum class Kind { None, Point, Spot, Rect, Linear };
+
+        Kind                 kind      = Kind::None;
+        std::array<float, 3> color{ 1.0f, 1.0f, 1.0f };  // 선형
+        float                lumens    = 0.0f;   // 원본 광속. 참고·진단용
+        float                intensity = 0.0f;   // cd — 주방향 광도 (point/spot)
+        float                radius    = 0.0f;   // m — 광원 반지름
+        float                innerDeg  = 0.0f;   // 반각. 축에서 잰 각도
+        float                outerDeg  = 0.0f;   // 반각
+        float                width     = 0.0f;   // m — rect/linear
+        float                length    = 0.0f;   // m — rect/linear
+        float                radiance  = 0.0f;   // cd/m^2 — rect/linear 면광원
+        std::string          iesFile;            // 진단용 파일명
+
+        [[nodiscard]] bool Valid() const { return kind != Kind::None; }
+    };
+
     struct Definition
     {
         std::string             id;
@@ -68,6 +96,9 @@ namespace iris::protocol
         int64_t                 persistentId  = 0;
         bool                    isGroup       = false;
         uint32_t                instanceCount = 0;
+
+        // 비어 있지 않으면 이 정의는 광원 프록시입니다. meshes 도 비어 있습니다.
+        LightSpec               light;
     };
 
     struct Texture
@@ -76,6 +107,32 @@ namespace iris::protocol
         std::string exportPath;  // 프로브가 내보낸 PNG. 씬 파일 기준 상대경로
         double      widthM  = 0.0;
         double      heightM = 0.0;
+    };
+
+    // Enscape 가 남긴 PBR 파라미터.
+    //
+    // SketchUp 은 색과 알파만 줍니다. 그래서 지금까지 모든 재질이
+    // roughness 0.5 / metalness 0 고정이었고, "재질이 섬세하지 않다"는
+    // 보고가 그것입니다. Enscape 모델에는 설계자가 정한 값이 들어 있습니다.
+    struct MaterialPbr
+    {
+        bool  present   = false;
+        std::string etype;              // GENERIC / SELF_ILLUMINATED / ...
+        float roughness = 0.5f;
+        float metalness = 0.0f;
+        float specular  = 0.5f;         // glTF 의 반사율 스케일과 같은 뜻
+        float opacity   = 1.0f;
+        float ior       = 0.0f;         // 0 이면 미지정
+        float bump      = 0.0f;
+        float normalIntensity = 0.0f;
+        std::string bumpType;           // UNDEFINED / BUMP / DISPLACEMENT / NORMAL
+        bool  solidGlass = false;
+
+        // 발광. cd/m^2 로 해석합니다 — 천장 패널의 3000~7000 이 실제 LED
+        // 패널 휘도와 맞습니다. 골프존 모델의 천장 조명 29개가 이쪽입니다.
+        bool                 hasEmissive = false;
+        std::array<float, 3> emissive{ 1.0f, 1.0f, 1.0f };
+        float                emissiveCd  = 0.0f;
     };
 
     struct Material
@@ -87,6 +144,7 @@ namespace iris::protocol
         int                  type       = 0;
         bool                 hasTexture = false;
         Texture              texture;
+        MaterialPbr          pbr;
     };
 
     struct View

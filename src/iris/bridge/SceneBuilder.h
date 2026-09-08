@@ -32,6 +32,7 @@ namespace iris::protocol
     struct Scene;
     struct Definition;
     struct Node;
+    struct LightSpec;
 }
 
 namespace iris::bridge
@@ -44,6 +45,11 @@ namespace iris::bridge
         size_t   materials   = 0;
         size_t   textures    = 0;
         size_t   glassMaterials = 0;   // 반투명 + 텍스처 없음 -> 유리로 해석
+        size_t   pointLights    = 0;
+        size_t   spotLights     = 0;   // 면광원 근사도 여기에 포함됩니다
+        size_t   emissiveMaterials = 0;   // Enscape 자체발광
+        size_t   specularOverrides = 0;   // Specular 가 0.5 가 아닌 재질
+        double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
         size_t   cameras     = 0;
@@ -107,12 +113,29 @@ namespace iris::bridge
                                std::vector<std::shared_ptr<donut::engine::Material>>&&)>;
         void SetInstanceMaterialApplier(InstanceMaterialApplier fn) { m_applyInstanceMaterials = std::move(fn); }
 
+        // **측광 단위 -> 렌더러 라디언스 단위.**
+        //
+        // Enscape 값은 물리 단위입니다(cd, cd/m^2). 렌더러는 그렇지 않습니다 —
+        // 환경맵의 하늘이 대략 1.0 인 스케일로 돌아갑니다. 실제 흐린 하늘은
+        // 약 5000 cd/m^2 이므로 그 비율로 옮깁니다.
+        //
+        // 이 값이 맞는지는 **상대 비율**이 더 중요합니다. 절대 밝기는 노출이
+        // 흡수하고, 조명끼리·발광 재질끼리의 균형은 이 한 값으로 보존됩니다.
+        // 확인: 천장 패널 5076 cd/m^2 -> 1.02 (하늘과 비슷한 밝기. 맞습니다)
+        //
+        // 미결정 B(PBR·측광 범위)에서 정식화합니다.
+        void SetPhotometricScale(float cdPerUnit)
+        {
+            m_photometricScale = (cdPerUnit > 1e-6f) ? (1.0f / cdPerUnit) : 1.0f;
+        }
+
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
         std::shared_ptr<donut::engine::SceneGraph> Build(const protocol::Scene& src, BuildStats& stats);
 
     private:
         std::function<void(const std::string&)> m_trace;
         std::string                             m_environmentMap;
+        float                                   m_photometricScale = 1.0f / 5000.0f;
         TextureLoader                           m_textureLoader;
         InstanceMaterialApplier                 m_applyInstanceMaterials;
         void Trace(const std::string& msg) const { if (m_trace) m_trace(msg); }
@@ -148,6 +171,12 @@ namespace iris::bridge
                                     const std::string& defId,
                                     const std::string& instanceMaterialId,
                                     BuildStats& stats);
+
+        // Enscape 광원을 씬 그래프 잎으로 만듭니다.
+        void BuildLight(const std::shared_ptr<donut::engine::SceneGraph>& graph,
+                        const std::shared_ptr<donut::engine::SceneGraphNode>& node,
+                        const protocol::LightSpec& spec,
+                        BuildStats& stats);
 
         // 기본 환경광. 자세한 이유는 SetEnvironmentMap 주석 참조.
         void BuildEnvironmentLight(const std::shared_ptr<donut::engine::SceneGraph>& graph,

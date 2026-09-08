@@ -32,6 +32,14 @@
 require 'json'
 require 'fileutils'
 
+# Enscape 가 속성 사전에 남긴 조명·재질 설정을 읽습니다.
+# 설계자가 이미 정해 둔 값이므로 추측하지 않습니다.
+#
+# require_relative 가 아니라 load 인 이유: SketchUp 콘솔에서 프로브를 다시
+# 로드해 가며 값을 조정하는데, require 는 한 번만 읽으므로 수정이 반영되지
+# 않습니다. 같이 갱신되어야 합니다.
+load File.expand_path('iris_enscape.rb', File.dirname(__FILE__))
+
 module IRIS
   module Probe
 
@@ -683,6 +691,23 @@ module IRIS
         @definitions[key] = {
           'id' => key, 'name' => defn.name, 'meshes' => [], 'children' => [],
         }
+
+        # Enscape 조명이면 지오메트리를 뽑지 않는다.
+        #
+        # 이 정의들은 **광원 자리를 표시하는 프록시**입니다. Enscape 도 렌더에
+        # 그리지 않습니다. 그리면 조명 앞에 작은 물체가 떠서 빛을 가립니다.
+        # 대신 인스턴스마다 광원 노드를 만듭니다 — 위치와 방향은 그 인스턴스의
+        # 변환에서 나오므로 씬 그래프가 알아서 합성합니다.
+        spec = light_spec(defn)
+        if spec
+          @definitions[key]['light']         = spec
+          @definitions[key]['persistent_id'] = safe_pid(defn)
+          @definitions[key]['is_group']      = false
+          @stats['definitions'] += 1
+          @stats['lights_defs']  = (@stats['lights_defs'] || 0) + 1
+          return key
+        end
+
         children = []
 
         hit = @cache && @cache.fetch(defn)
@@ -805,6 +830,15 @@ module IRIS
         end
       end
 
+      # Enscape 조명 정의인가. 사전이 없거나 파싱이 안 되면 nil.
+      def light_spec(defn)
+        IRIS::Enscape.light(defn)
+      rescue StandardError => e
+        @enscape_errors = (@enscape_errors || 0) + 1
+        @enscape_last_error ||= e.message
+        nil
+      end
+
       def register_material(mat)
         key = "mat_#{mat.entityID}"
         return key if @materials.key?(key)
@@ -832,6 +866,17 @@ module IRIS
             'pixels'   => [(tex.image_width rescue nil), (tex.image_height rescue nil)],
           } : nil,
         }
+
+        # Enscape 가 남긴 PBR 파라미터. 있으면 그대로 씁니다 — 추측한
+        # roughness 0.5 / metalness 0 고정보다 언제나 낫습니다.
+        begin
+          pbr = IRIS::Enscape.material(mat)
+          @materials[key]['pbr'] = pbr if pbr
+        rescue StandardError => e
+          @enscape_errors = (@enscape_errors || 0) + 1
+          @enscape_last_error ||= e.message
+        end
+
         key
       end
 
@@ -1117,7 +1162,7 @@ module IRIS
           'faces' => 0, 'triangles' => 0, 'vertices' => 0, 'instances' => 0,
           'definitions' => 0, 'face_errors' => 0, 'groups_skipped' => 0,
           'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
-          'defs_extracted' => 0, 'defs_cached' => 0,
+          'defs_extracted' => 0, 'defs_cached' => 0, 'lights_defs' => 0,
         }
         @definitions    = {}
         @materials      = {}

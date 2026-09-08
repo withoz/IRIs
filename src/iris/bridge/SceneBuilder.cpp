@@ -208,9 +208,35 @@ namespace iris::bridge
                 : float3(sm.color[0], sm.color[1], sm.color[2]);
 
             // SketchUp 은 PBR 파라미터를 주지 않습니다. 아래는 건축 재질에 대한
-            // 잠정 휴리스틱이며, 미결정 B(PBR 파라미터 범위)가 정해지면 바뀝니다.
+            // 잠정 휴리스틱이며, Enscape 값이 있으면 바로 아래에서 덮어씁니다.
             m->metalness = 0.0f;
             m->roughness = 0.5f;
+
+            // Enscape 가 남긴 값이 있으면 그것이 정답입니다 — 설계자가 직접
+            // 정한 값이고, 우리가 추측한 고정값보다 언제나 낫습니다.
+            const bool ePbr = sm.pbr.present;
+            if (ePbr)
+            {
+                m->roughness = sm.pbr.roughness;
+                m->metalness = sm.pbr.metalness;
+
+                // Enscape 의 Specular 는 glTF 의 반사율 스케일과 같은 뜻입니다.
+                // Donut 의 금속-거칠기 모델에는 대응 필드가 없어 기본값(0.5)에서
+                // 벗어날 때만 기록해 둡니다. 실제 반영은 미결정 B 에서 정합니다.
+                if (std::abs(sm.pbr.specular - 0.5f) > 0.01f)
+                    ++stats.specularOverrides;
+
+                if (sm.pbr.hasEmissive)
+                {
+                    // **천장 조명 29개가 여기입니다.** Enscape 조명 객체가 아니라
+                    // 자체발광 재질로 만들어져 있었습니다. 이것을 반영하지 않으면
+                    // 실내가 어둡습니다.
+                    m->emissiveColor     = float3(sm.pbr.emissive[0], sm.pbr.emissive[1],
+                                                  sm.pbr.emissive[2]);
+                    m->emissiveIntensity = sm.pbr.emissiveCd * m_photometricScale;
+                    ++stats.emissiveMaterials;
+                }
+            }
 
             if (sm.alpha < 0.999f && !hasTexture)
             {
@@ -225,7 +251,8 @@ namespace iris::bridge
                 // 텍스처가 있는 반투명은 잎사귀 컷아웃일 수 있어 그대로 둡니다.
                 m->domain             = de::MaterialDomain::Transmissive;
                 m->transmissionFactor = 1.0f - sm.alpha;
-                m->roughness          = 0.05f;
+                // 유리도 Enscape 값이 있으면 그쪽을 씁니다. 없을 때만 0.05.
+                m->roughness          = ePbr ? sm.pbr.roughness : 0.05f;
                 m->opacity            = 1.0f;   // 투과로 표현하므로 불투명도는 되돌립니다
                 ++stats.glassMaterials;
             }
@@ -394,6 +421,11 @@ namespace iris::bridge
             ApplyTransform(node, n.transform.data());
             graph->Attach(parent, node);
 
+            // 광원 프록시는 지오메트리 대신 광원 잎을 답니다. 위치와 방향은
+            // 이 노드의 변환에서 나오므로 씬 그래프가 알아서 합성합니다.
+            if (def->light.Valid())
+                BuildLight(graph, node, def->light, stats);
+
             if (!def->meshes.empty())
             {
                 auto it = m_meshes.find(def->id);
@@ -450,6 +482,85 @@ namespace iris::bridge
     }
 
     // ---------------------------------------------------------------- 환경광
+
+    // ---------------------------------------------------------------- 광원
+
+    void SceneBuilder::BuildLight(const std::shared_ptr<de::SceneGraph>& graph,
+                                  const std::shared_ptr<de::SceneGraphNode>& node,
+                                  const protocol::LightSpec& spec,
+                                  BuildStats& stats)
+    {
+        using Kind = protocol::LightSpec::Kind;
+
+        // 면광원(rect/linear)은 아직 발광 지오메트리로 내지 않습니다. 넓은
+        // 원뿔 + 등가 면적의 구면 광원으로 근사합니다 — 반각 88도이면 실효
+        // 입체각이 거의 정확히 pi 라서 램버시안 패널의 축상 광도와 맞습니다.
+        // 지오메트리로 내는 것은 뒤로 미룹니다. 두 종류 합쳐 52개 중 5개입니다.
+        const bool  area   = (spec.kind == Kind::Rect || spec.kind == Kind::Linear);
+        const bool  isSpot = (spec.kind == Kind::Spot) || area;
+
+        auto leaf = m_typeFactory->CreateLeaf(isSpot ? "SpotLight" : "PointLight");
+        if (!leaf)
+        {
+            stats.warnings.push_back("팩토리가 광원을 만들지 못했습니다");
+            return;
+        }
+
+        const float3 color(spec.color[0], spec.color[1], spec.color[2]);
+
+        if (isSpot)
+        {
+            auto light = std::dynamic_pointer_cast<de::SpotLight>(leaf);
+            if (!light)
+            {
+                stats.warnings.push_back("SpotLight 캐스팅에 실패했습니다");
+                return;
+            }
+
+            float radius    = spec.radius;
+            float outer     = spec.outerDeg;
+            float inner     = spec.innerDeg;
+            float intensity = spec.intensity;
+
+            if (area)
+            {
+                const float w = spec.width  > 0.0f ? spec.width  : spec.length;
+                const float a = std::max(w * spec.length, 1e-6f);
+                radius    = std::sqrt(a / dm::PI_f);
+                outer     = 88.0f;
+                inner     = 0.0f;
+                intensity = spec.radiance * a;   // L * A = 축상 광도
+            }
+
+            // ⚠ RTXPT 는 radius == 0 인 스포트라이트를 가정하지 않습니다
+            // (LightsBaker.cpp 의 assert(false) — "not tested with radius == 0").
+            // 0 이면 kPoint 경로로 빠지면서 원뿔 성형도 적용되지 않습니다.
+            light->radius     = std::max(radius, 0.005f);
+            light->intensity  = intensity * m_photometricScale;
+            light->color      = color;
+            light->range      = 0.0f;
+            light->outerAngle = outer;   // 축에서 잰 반각(도) — RTXPT 는 cos(outerAngle) 로 씁니다
+            light->innerAngle = std::min(inner, outer);
+            ++stats.spotLights;
+        }
+        else
+        {
+            auto light = std::dynamic_pointer_cast<de::PointLight>(leaf);
+            if (!light)
+            {
+                stats.warnings.push_back("PointLight 캐스팅에 실패했습니다");
+                return;
+            }
+            light->radius    = spec.radius;   // 0 이어도 됩니다. kPoint 경로가 처리합니다
+            light->intensity = spec.intensity * m_photometricScale;
+            light->color     = color;
+            light->range     = 0.0f;
+            ++stats.pointLights;
+        }
+
+        graph->AttachLeafNode(node, leaf);
+        stats.lightLumens += spec.lumens;
+    }
 
     void SceneBuilder::BuildEnvironmentLight(const std::shared_ptr<de::SceneGraph>& graph,
                                              const std::shared_ptr<de::SceneGraphNode>& parent,
