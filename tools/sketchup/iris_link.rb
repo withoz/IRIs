@@ -157,6 +157,11 @@ module IRIS
           say format('  └ 블롭 %.1f · JSON %.1f · 조립 %.1f ms',
                      pp[:blob_ms].to_f, pp[:json_ms].to_f, pp[:join_ms].to_f)
         end
+        if @diag
+          say format('  └ 세션 %s (이전 %s) · 보유 판 %d개 · full=%s',
+                     @diag[:session].inspect, @diag[:prev].inspect,
+                     @diag[:sent_gen], @diag[:full])
+        end
         gc = IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts : nil
         if gc && gc[:skipped] > 0
           say format('  └ 지오메트리 %d개 실음 / %d개 생략 (렌더러가 이미 보유)',
@@ -196,7 +201,7 @@ module IRIS
         path = File.join(dir, 'sync_timing.csv')
         head = !File.exist?(path)
         File.open(path, 'a:UTF-8') do |f|
-          f.puts('time,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,geom_sent,geom_skipped,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts('time,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,geom_sent,geom_skipped,session,prev_session,held_gen,triangles,instances,defs_extracted,defs_cached') if head
           ph = @phase || {}
           pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
           f.puts([Time.now.strftime('%H:%M:%S'),
@@ -210,6 +215,8 @@ module IRIS
                   format('%.1f', extract_ms + pack_ms + send_ms), bytes,
                   (IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts[:sent] : 0),
                   (IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts[:skipped] : 0),
+                  (@diag || {})[:session].inspect, (@diag || {})[:prev].inspect,
+                  (@diag || {})[:sent_gen],
                   st['triangles'].to_i, st['instances'].to_i,
                   IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_extracted', 0).to_i,
                   IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_cached', 0).to_i].join(','))
@@ -522,6 +529,8 @@ module IRIS
           # 그것을 모르면 바뀐 것만 보내고, 렌더러는 나머지를 영영 못 받아
           # **조용히 빈 화면**이 됩니다. 세션 번호가 그것을 막습니다.
           session = ack['session']
+          @diag = { session: session, prev: @session,
+                    sent_gen: (@sent_gen || {}).size, full: full }
           if full || session.nil? || session != @session
             if @session && session != @session
               say '렌더러가 새로 떴습니다 — 전체를 보냅니다.'

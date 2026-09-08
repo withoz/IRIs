@@ -51,7 +51,12 @@ module IRIS
     #   2 — Enscape PBR(pbr) 필드 추가
     #   3 — 자식 엔티티 목록(kids)·엔티티 개수(esize) 추가
     #   4 — 메시를 배열이 아니라 **미리 인코딩한 이진**으로 보관
-    CACHE_SCHEMA = 4
+    #   5 — 지오메트리 판(gen) 추가 — 델타의 근거
+    #
+    # ⚠ 번호를 올리는 것을 잊어도 되도록, fetch 가 **필드 목록**도 함께
+    #   봅니다(DefCache::CACHE_FIELDS). 실제로 한 번 잊었고 델타가 조용히
+    #   꺼졌습니다.
+    CACHE_SCHEMA = 5
 
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
@@ -146,10 +151,22 @@ module IRIS
       #
       # 콘솔에서 프로브를 다시 로드하는 것이 이 도구의 정상적인 사용법이므로,
       # 스스로 무효화되어야 합니다.
+      # 읽는 쪽이 쓰는 필드가 **전부 있는지** 봅니다.
+      #
+      # 판 번호만으로는 부족했습니다. 판을 4로 올린 뒤 gen 필드를 추가하면서
+      # 판을 다시 올리지 않았고, 그래서 검사는 통과하는데 gen 이 없어
+      # **델타가 조용히 꺼졌습니다.** 오류도 없고 화면도 맞아서, 계측하지
+      # 않았다면 '구현 완료'라고 말했을 것입니다.
+      #
+      # 필드 목록 검사는 그 실수를 기계가 잡아 줍니다 — 읽을 필드를 늘리면
+      # 여기에도 적어야 하고, 적으면 옛 캐시가 자동으로 버려집니다.
+      CACHE_FIELDS = %i[gen kids esize meshes mats verts tris faces seen].freeze
+
       def fetch(defn)
         e = @entries[defn.entityID]
         return nil if e.nil? || e[:dirty]
         return nil if e[:schema] != CACHE_SCHEMA
+        return nil unless CACHE_FIELDS.all? { |k| e.key?(k) }
         e
       end
 
