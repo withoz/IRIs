@@ -1,8 +1,11 @@
 #include "IrisBridge.h"
 
+#include <donut/engine/TextureCache.h>
 #include <json/json.h>
 
 #include <memory>
+
+namespace de = donut::engine;
 
 namespace iris::bridge
 {
@@ -158,6 +161,33 @@ namespace iris::bridge
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_textureBase;
+    }
+
+    std::shared_ptr<de::LoadedTexture> IrisBridge::FindTexture(const std::string& key) const
+    {
+        std::lock_guard<std::mutex> lock(m_texMutex);
+        auto it = m_textures.find(key);
+        return it == m_textures.end() ? nullptr : it->second;
+    }
+
+    void IrisBridge::CacheTexture(const std::string& key, std::shared_ptr<de::LoadedTexture> tex)
+    {
+        if (!tex)
+            return;
+        std::lock_guard<std::mutex> lock(m_texMutex);
+        m_textures[key] = std::move(tex);
+    }
+
+    size_t IrisBridge::TextureCacheSize() const
+    {
+        std::lock_guard<std::mutex> lock(m_texMutex);
+        return m_textures.size();
+    }
+
+    void IrisBridge::ClearTextureCache()
+    {
+        std::lock_guard<std::mutex> lock(m_texMutex);
+        m_textures.clear();
     }
 
     uint64_t IrisBridge::ScenesApplied() const

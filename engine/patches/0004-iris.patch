@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 14:13:56 +0900
+Subject: [PATCH 4/4] =?UTF-8?q?iris:=20=ED=85=8D=EC=8A=A4=EC=B2=98?=
+ =?UTF-8?q?=EB=A5=BC=20=ED=94=84=EB=A1=9C=EC=84=B8=EC=8A=A4=20=EC=88=98?=
+ =?UTF-8?q?=EB=AA=85=20=EC=BA=90=EC=8B=9C=EB=A1=9C=20=EC=9E=AC=EC=82=AC?=
+ =?UTF-8?q?=EC=9A=A9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+엔진의 TextureCache 는 씬을 로드할 때마다 Reset() 된다
+(ApplicationBase::BeginLoadingScene). 다른 씬으로 바꿀 때는 맞지만
+라이브 갱신에서는 곧바로 다시 읽을 텍스처를 버린다.
+
+Reset() 은 맵만 비우므로 shared_ptr 을 들고 있으면 텍스처는 살아남는다.
+IrisBridge 가 경로를 키로 들고 SceneBuilder 에 로더로 끼워 넣는다.
+
+실측 (골프존 40장)
+  첫 로드   661.3 ms  (텍스처 638 ms)
+  이후      17.5~21.8 ms  (텍스처 0 ms)
+  -> 33배. 텍스처 디코드는 딱 한 번만 일어난다
+---
+ Rtxpt/Iris/IrisScene.cpp | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 125af14..492a84a 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -9,6 +9,7 @@
+ #include "iris/protocol/IrisbReader.h"
+ 
+ #include <donut/core/log.h>
++#include <donut/engine/TextureCache.h>
+ 
+ #include <cstdarg>
+ #include <exception>
+@@ -183,6 +184,23 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     iris::bridge::BuildStats stats;
+     builder.SetTrace([](const std::string& s) { Trace("  [빌드] %s", s.c_str()); });
+ 
++    // 텍스처는 프로세스 수명 캐시를 먼저 봅니다.
++    // 엔진의 TextureCache 는 씬을 로드할 때마다 비워지므로, 라이브 갱신에서
++    // 같은 텍스처를 매번 다시 디코드하게 됩니다 — 실측 구축 656 ms 중 638 ms 였습니다.
++    // Reset() 은 맵만 비우므로 우리가 shared_ptr 을 들고 있으면 살아남습니다.
++    auto* cache = m_TextureCache.get();
++    builder.SetTextureLoader(
++        [cache](const std::filesystem::path& p) -> std::shared_ptr<LoadedTexture>
++        {
++            auto& bridge = iris::bridge::IrisBridge::Get();
++            const std::string key = p.generic_string();
++            if (auto hit = bridge.FindTexture(key))
++                return hit;
++            auto loaded = cache ? cache->LoadTextureFromFileDeferred(p, true) : nullptr;
++            bridge.CacheTexture(key, loaded);
++            return loaded;
++        });
++
+     // SketchUp 은 광원을 주지 않습니다. 기본 하늘을 넣지 않으면 화면이 검게
+     // 나옵니다. 경로는 Assets 기준 상대경로입니다.
+     builder.SetEnvironmentMap("EnvironmentMaps/kloofendal_48d_partly_cloudy_puresky_4k_cube_bc6u.dds");

@@ -19,9 +19,16 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+namespace donut::engine
+{
+    struct LoadedTexture;
+}
 
 namespace iris::bridge
 {
@@ -50,6 +57,23 @@ namespace iris::bridge
         // 단순합니다. 원격 구성이 생기면 바이트 전송을 다시 봅니다.
         [[nodiscard]] std::string TextureBase() const;
 
+        // --- 텍스처 캐시 (프로세스 수명) ---
+        //
+        // **엔진의 TextureCache 는 씬을 로드할 때마다 비워집니다**
+        // (ApplicationBase::BeginLoadingScene 이 Reset() 을 부릅니다).
+        // 다른 씬으로 바꿀 때는 맞지만, 라이브 갱신에서는 곧바로 다시 읽을
+        // 텍스처를 버리는 셈입니다. 실측에서 동기화 한 번마다 40장을 다시
+        // 디코드했고 그것이 구축 시간 656 ms 중 638 ms 였습니다.
+        //
+        // Reset() 은 맵만 비우므로 **우리가 shared_ptr 을 들고 있으면 텍스처는
+        // 살아남습니다.** GPU 자원도 그대로입니다.
+        [[nodiscard]] std::shared_ptr<donut::engine::LoadedTexture>
+                          FindTexture(const std::string& key) const;
+        void              CacheTexture(const std::string& key,
+                                       std::shared_ptr<donut::engine::LoadedTexture> tex);
+        [[nodiscard]] size_t TextureCacheSize() const;
+        void                 ClearTextureCache();
+
         // --- 진단 ---
         [[nodiscard]] protocol::PipeServerStats Stats() const;
         [[nodiscard]] std::string               LastError() const;
@@ -73,5 +97,8 @@ namespace iris::bridge
         protocol::PipeServer                    m_server;
         uint64_t                                m_applied = 0;
         uint64_t                                m_dropped = 0;
+
+        mutable std::mutex                      m_texMutex;
+        std::unordered_map<std::string, std::shared_ptr<donut::engine::LoadedTexture>> m_textures;
     };
 }

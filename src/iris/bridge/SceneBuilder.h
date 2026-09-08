@@ -24,6 +24,7 @@
 namespace donut::engine
 {
     class TextureCache;
+    struct LoadedTexture;
 }
 
 namespace iris::protocol
@@ -74,12 +75,23 @@ namespace iris::bridge
         // 본격적인 조명 시스템은 Phase 1 4단계입니다.
         void SetEnvironmentMap(std::string path) { m_environmentMap = std::move(path); }
 
+        // 텍스처를 어떻게 얻을지 바깥에서 정할 수 있게 합니다.
+        //
+        // 기본은 엔진의 TextureCache 를 직접 부르는 것인데, 그 캐시는 **씬을
+        // 로드할 때마다 비워집니다.** 라이브 갱신에서는 같은 텍스처를 매번 다시
+        // 디코드하게 되므로(실측 구축 656 ms 중 638 ms), 호출자가 프로세스
+        // 수명 캐시를 끼워 넣을 수 있어야 합니다.
+        using TextureLoader =
+            std::function<std::shared_ptr<donut::engine::LoadedTexture>(const std::filesystem::path&)>;
+        void SetTextureLoader(TextureLoader loader) { m_textureLoader = std::move(loader); }
+
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
         std::shared_ptr<donut::engine::SceneGraph> Build(const protocol::Scene& src, BuildStats& stats);
 
     private:
         std::function<void(const std::string&)> m_trace;
         std::string                             m_environmentMap;
+        TextureLoader                           m_textureLoader;
         void Trace(const std::string& msg) const { if (m_trace) m_trace(msg); }
 
         std::shared_ptr<donut::engine::SceneTypeFactory> m_typeFactory;

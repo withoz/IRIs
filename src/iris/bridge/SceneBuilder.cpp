@@ -149,14 +149,16 @@ namespace iris::bridge
             m->domain    = (sm.alpha < 0.999f) ? de::MaterialDomain::AlphaBlended
                                                : de::MaterialDomain::Opaque;
 
-            if (sm.hasTexture && !sm.texture.exportPath.empty() && m_textureCache)
+            if (sm.hasTexture && !sm.texture.exportPath.empty() && (m_textureCache || m_textureLoader))
             {
                 const std::filesystem::path p = m_baseDir / Utf8Path(sm.texture.exportPath);
                 std::error_code ec;
                 if (std::filesystem::exists(p, ec))
                 {
                     // 색상 텍스처이므로 sRGB 입니다.
-                    m->baseOrDiffuseTexture = m_textureCache->LoadTextureFromFileDeferred(p, true);
+                    m->baseOrDiffuseTexture =
+                        m_textureLoader ? m_textureLoader(p)
+                                        : m_textureCache->LoadTextureFromFileDeferred(p, true);
                     ++stats.textures;
                 }
                 else
