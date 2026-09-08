@@ -50,7 +50,8 @@ module IRIS
     # 올리지 않으면 같은 SketchUp 세션의 옛 캐시가 되살아나 새 필드가 빠집니다.
     #   2 — Enscape PBR(pbr) 필드 추가
     #   3 — 자식 엔티티 목록(kids)·엔티티 개수(esize) 추가
-    CACHE_SCHEMA = 3
+    #   4 — 메시를 배열이 아니라 **미리 인코딩한 이진**으로 보관
+    CACHE_SCHEMA = 4
 
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
@@ -344,9 +345,12 @@ module IRIS
             @write_sizes = write_binary(path, scene)
           else
             path = File.join(dir, "#{base}.iris.json")
+            # 메시는 이제 **미리 인코딩한 이진**으로 들고 있습니다. JSON 은
+            # 이진 문자열을 담지 못하므로 이 경로에서만 배열로 풀어 줍니다.
+            plain = scene_with_arrays(scene)
             # 정점 배열이 그대로 텍스트가 되므로 기본은 compact.
             # 눈으로 확인할 때만 pretty: true.
-            json = pretty ? JSON.pretty_generate(scene) : JSON.generate(scene)
+            json = pretty ? JSON.pretty_generate(plain) : JSON.generate(plain)
             File.open(path, 'w:UTF-8') { |f| f.write(json) }
             @write_sizes = nil
           end
@@ -417,12 +421,49 @@ module IRIS
 
       # 배열을 블롭으로 옮기고 {off, count} 참조만 남긴다.
       def strip_mesh(mb, blob)
+        bin = mb['bin']
+        cnt = mb['count']
         {
           'material'  => mb['material'],
-          'positions' => push_f32(blob, mb['positions']),
-          'normals'   => push_f32(blob, mb['normals']),
-          'uvs'       => push_f32(blob, mb['uvs']),
-          'indices'   => push_u32(blob, mb['indices']),
+          'positions' => push_bin(blob, bin['p'],  cnt['p']),
+          'normals'   => push_bin(blob, bin['n'],  cnt['n']),
+          'uvs'       => push_bin(blob, bin['uv'], cnt['uv']),
+          'indices'   => push_bin(blob, bin['i'],  cnt['i']),
+        }
+      end
+
+      # 이미 인코딩된 조각을 블롭에 이어붙이고 {off, count} 만 남긴다.
+      def push_bin(blob, str, count)
+        return nil if str.nil? || count.nil? || count.zero?
+        off = blob.bytesize
+        blob << str
+        { 'off' => off, 'count' => count }
+      end
+
+      # 씬 전체를 JSON 이 담을 수 있는 모양으로. 느린 경로 전용입니다.
+      def scene_with_arrays(scene)
+        out = scene.dup
+        out['definitions'] = scene['definitions'].each_with_object({}) do |(k, d), h|
+          h[k] = d.merge('meshes' => (d['meshes'] || []).map { |mb| mesh_as_arrays(mb) })
+        end
+        out['root'] = scene['root'].merge(
+          'meshes' => (scene['root']['meshes'] || []).map { |mb| mesh_as_arrays(mb) }
+        )
+        out
+      end
+
+      # JSON 덤프(호환·디버깅용)는 배열을 기대합니다. 이제 메시는 이진으로
+      # 들고 있으므로 그때만 풀어 줍니다. 느린 경로이므로 비용은 문제되지 않습니다.
+      def mesh_as_arrays(mb)
+        bin = mb['bin']
+        cnt = mb['count']
+        return mb unless bin && cnt
+        {
+          'material'  => mb['material'],
+          'positions' => bin['p'].unpack('e*'),
+          'normals'   => bin['n'].unpack('e*'),
+          'uvs'       => bin['uv'].unpack('e*'),
+          'indices'   => bin['i'].unpack('V*'),
         }
       end
 
@@ -898,17 +939,32 @@ module IRIS
         raise BudgetExceeded if @limit && @stats['triangles'] > @limit
       end
 
+      # 정점 데이터를 **여기서 한 번만** 이진으로 인코딩합니다.
+      #
+      # 예전에는 Ruby 배열로 들고 있다가 동기화할 때마다 pack 했습니다. 그런데
+      # 그 배열은 캐시에 그대로 있는 **변하지 않는 데이터**입니다 — 매번 다시
+      # 인코딩할 이유가 없습니다. 실측으로 블롭 만들기가 367 ms 였고, 그것이
+      # 직렬화 446 ms 의 82% 였습니다.
+      #
+      # 미리 인코딩해 두면 동기화는 **이어붙이기만** 하면 됩니다. 그리고 이
+      # 조각들이 곧 델타가 보낼 단위이기도 합니다.
+      #
+      # 메모리도 줄어듭니다 — f32 는 4바이트인데 Ruby 배열의 Float 는 8바이트입니다.
       def finalize_buckets(buckets, counts = nil)
         buckets.map do |mkey, b|
           n = b['p'].length / 3
           @stats['vertices'] += n
           counts[:verts] += n if counts
           {
-            'material'  => (mkey == '__default__' ? nil : mkey),
-            'positions' => b['p'],
-            'normals'   => b['n'],
-            'uvs'       => b['uv'],
-            'indices'   => b['i'],
+            'material' => (mkey == '__default__' ? nil : mkey),
+            'bin'      => {
+              'p'  => b['p'].pack('e*'),  'n' => b['n'].pack('e*'),
+              'uv' => b['uv'].pack('e*'), 'i' => b['i'].pack('V*'),
+            },
+            'count'    => {
+              'p'  => b['p'].length,  'n' => b['n'].length,
+              'uv' => b['uv'].length, 'i' => b['i'].length,
+            },
           }
         end
       end
