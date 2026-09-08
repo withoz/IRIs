@@ -46,6 +46,11 @@ module IRIS
     VERSION   = '0.1.0'
     INCH_TO_M = 0.0254
 
+    # 정의 캐시 레코드의 판. **머티리얼 레코드의 모양이 바뀌면 올리십시오.**
+    # 올리지 않으면 같은 SketchUp 세션의 옛 캐시가 되살아나 새 필드가 빠집니다.
+    #   2 — Enscape PBR(pbr) 필드 추가
+    CACHE_SCHEMA = 2
+
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
     MESH_FLAGS = 1 | 2 | 4
@@ -130,14 +135,25 @@ module IRIS
         @suppressed = { elements: 0, materials: 0 }
       end
 
+      # ⚠ 스키마 판이 다르면 버립니다.
+      #
+      # 캐시는 SketchUp 세션 내내 살아 있고, **머티리얼 레코드도 통째로** 들고
+      # 있습니다. 프로브 코드가 바뀌어 레코드에 필드가 늘어나면(예: Enscape PBR)
+      # 옛 레코드가 그대로 되살아나 새 필드가 통째로 빠집니다. 조용히 틀립니다 —
+      # 오류도 없고 개수도 맞으므로 알아채기 어렵습니다.
+      #
+      # 콘솔에서 프로브를 다시 로드하는 것이 이 도구의 정상적인 사용법이므로,
+      # 스스로 무효화되어야 합니다.
       def fetch(defn)
         e = @entries[defn.entityID]
         return nil if e.nil? || e[:dirty]
+        return nil if e[:schema] != CACHE_SCHEMA
         e
       end
 
       def store(defn, meshes, mats, verts, tris, faces, seen)
         @entries[defn.entityID] = {
+          schema: CACHE_SCHEMA,
           meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces,
           # 능력 플래그(법선·UV 추출 성공 여부)도 함께 보관한다.
           # 이게 없으면 캐시 적중 시 accumulate_face 가 안 돌아서
@@ -880,6 +896,10 @@ module IRIS
         key
       end
 
+      def comma_i(v)
+        v.to_i.to_s.reverse.scan(/\d{1,3}/).join(',').reverse
+      end
+
       # sRGB -> 선형. 표준 변환식입니다.
       def srgb_to_linear(c)
         c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055)**2.4
@@ -1098,6 +1118,25 @@ module IRIS
         w << ''
         w << "     저장된 시점   : #{(@scene_views_list || []).size}"
         w << "     시점 수집 오류: #{@views_error}" if @views_error
+        w << ''
+        w << ' [3-b] Enscape 설정 (조명·PBR)'
+        lit  = @definitions.values.select { |d| d['light'] }
+        linst = lit.sum { |d| @instance_count[d['id']] || 0 }
+        pbrs = @materials.values.count { |m| m['pbr'] }
+        if lit.empty? && pbrs.zero?
+          w << '     (없음 — Enscape 로 작업된 모델이 아닙니다)'
+        else
+          w << "     조명 정의     : #{lit.size}종 / 인스턴스 #{linst}개 (프록시 지오메트리는 제외됨)"
+          lit.group_by { |d| d['light']['kind'] }.sort_by { |k, _| k.to_s }.each do |kind, ds|
+            n = ds.sum { |d| @instance_count[d['id']] || 0 }
+            lm = ds.sum { |d| (d['light']['lumens'] || 0) * (@instance_count[d['id']] || 0) }
+            w << format('       %-8s %2d종 · %3d개 · 총 %s lm', kind, ds.size, n, comma_i(lm))
+          end
+          w << "     PBR 재질      : #{pbrs} / #{@materials.size}"
+          emi = @materials.values.select { |m| m['pbr'] && m['pbr']['emissive_cd'] }
+          w << "     발광 재질     : #{emi.size}개" unless emi.empty?
+        end
+        w << "     Enscape 읽기 오류: #{@enscape_errors} (#{@enscape_last_error})" if @enscape_errors.to_i > 0
         w << ''
         w << ' [4] 증분 동기화 가능성'
         w << "     persistent_id    : #{@caps['persistent_id'] ? 'O — GUID 델타 추적 가능' : 'X — 추적 불가'}"

@@ -29,6 +29,17 @@ module IRIS
 
     class << self
       def run(out_dir: nil)
+        measure(out_dir)
+      rescue StandardError => e
+        # 콘솔의 예외는 저에게 보이지 않습니다. 파일로 남겨야 원인을 압니다.
+        say ''
+        say "!! 실패: #{e.class}: #{e.message}"
+        e.backtrace&.first(8)&.each { |l| say "   #{l}" }
+        write_log(out_dir)
+        raise
+      end
+
+      def measure(out_dir)
         model = Sketchup.active_model
         return puts('[IRIS] 활성 모델이 없습니다.') unless model
 
@@ -112,12 +123,14 @@ module IRIS
       end
 
       # 로컬 벡터가 월드에서 향하는 단위 방향
+      # SketchUp 은 Transformation * Vector3d 에 **선형부만** 적용합니다
+      # (이동은 벡터에 뜻이 없으므로). 그래서 원점을 빼는 보정이 필요 없습니다 —
+      # 빼려고 하면 Vector3d - Point3d 가 되어 그 자리에서 죽습니다.
       def world_dir(tr, v)
-        d = tr * Geom::Vector3d.new(v[0], v[1], v[2]) - tr * Geom::Point3d.new(0, 0, 0)
-        d = Geom::Vector3d.new(d.to_a) if d.is_a?(Geom::Point3d)
-        len = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+        d = (tr * Geom::Vector3d.new(v[0], v[1], v[2])).to_a.map(&:to_f)
+        len = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
         return [0.0, 0.0, 0.0] if len < 1e-12
-        [d.x / len, d.y / len, d.z / len]
+        [d[0] / len, d[1] / len, d[2] / len]
       end
 
       def scale_of(tr)
