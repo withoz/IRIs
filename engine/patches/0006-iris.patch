@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 14:51:30 +0900
+Subject: [PATCH 6/6] =?UTF-8?q?iris:=20=EB=9D=BC=EC=9D=B4=EB=B8=8C=20?=
+ =?UTF-8?q?=EC=94=AC=20=EA=B8=B0=EB=B3=B8=EA=B0=92=EC=9D=84=20=EB=A6=AC?=
+ =?UTF-8?q?=EC=96=BC=ED=83=80=EC=9E=84=20=EB=AA=A8=EB=93=9C=EB=A1=9C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+화면이 계속 노이즈로 남는다는 보고를 받고 UI 를 보니 원인이 분명했다 —
+Reference 모드, 누적 434 / 4096 샘플. 버그가 아니라 수렴 중이었다.
+
+RTXPT 는 설정 노드가 없으면 레퍼런스로 간다. .irisb 씬에는 설정 노드가
+없다. 레퍼런스는 4096 샘플을 쌓아야 깨끗해지고 4K 30 FPS 기준 2분이
+넘는데, 편집할 때마다 누적이 처음부터 다시 시작하므로 **작업 중에는
+영영 노이즈가 남는다.**
+
+라이브 링크에는 리얼타임(DLSS-RR)이 맞다. 한 프레임에 깨끗한 그림을 내고,
+Phase 0 실측에서 속도 1.4~1.6배 품질 2~4.6배로 최선이었던 파이프라인이다.
+최종 출력이 필요하면 UI 에서 레퍼런스로 바꾸면 된다.
+
+IrisScene 이 설정 노드가 없을 때 기본값을 만들어 넣는다. 그러려면
+ExtendedScene::m_loadedSettings 가 protected 여야 한다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp           | 21 +++++++++++++++++++++
+ Rtxpt/SampleCommon/ExtendedScene.h |  4 +++-
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 0b73f20..d2c5a68 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -234,6 +234,27 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     log::info("IRIS: 재질 상속 — 상속 버킷 %zu · 인스턴스 재질 적용 %zu곳",
+               stats.inheritingBuckets, stats.overriddenSubInstances);
+ 
++    // --- IRIS 기본 설정 ---
++    //
++    // **라이브 링크에는 리얼타임 모드가 맞습니다.**
++    //
++    // RTXPT 는 설정 노드가 없으면 레퍼런스 모드로 갑니다. 레퍼런스는 4096
++    // 샘플을 누적해야 깨끗해지는데, 4K 30 FPS 기준 2분이 넘습니다. 편집할
++    // 때마다 누적이 처음부터 다시 시작하므로 **작업 중에는 영영 노이즈가
++    // 남습니다.** 실제로 그렇게 보였습니다.
++    //
++    // 리얼타임(DLSS-RR)은 한 프레임에 깨끗한 그림을 냅니다. Phase 0 실측에서
++    // 속도 1.4~1.6배, 품질 2~4.6배로 최선이었던 파이프라인이기도 합니다
++    // (docs/04-RTXPT-실측.md 2·5절). 최종 출력이 필요하면 UI 에서 레퍼런스로
++    // 바꾸면 됩니다.
++    if (!m_loadedSettings)
++    {
++        auto settings = std::make_shared<SampleSettings>();
++        settings->realtimeMode     = true;
++        settings->enableAnimations = false;   // CAD 씬에는 애니메이션이 없습니다
++        m_loadedSettings = settings;
++    }
++
+     // ExtendedScene 이 로딩 후에 하는 머티리얼 후처리를 같이 합니다.
+     // ProcessNodesRecursive 는 JSON 씬의 설정 노드를 다루는 것이라 .irisb 에는
+     // 해당 사항이 없어 건너뜁니다.
+diff --git a/Rtxpt/SampleCommon/ExtendedScene.h b/Rtxpt/SampleCommon/ExtendedScene.h
+index 2fd0e16..3391167 100644
+--- a/Rtxpt/SampleCommon/ExtendedScene.h
++++ b/Rtxpt/SampleCommon/ExtendedScene.h
+@@ -156,7 +156,9 @@ public:
+ 
+ class ExtendedScene : public donut::engine::Scene
+ {
+-private:
++protected:
++    // IRIS: 파생 클래스(IrisScene)가 기본 설정을 넣을 수 있어야 합니다.
++    // .irisb 씬에는 설정 노드가 없으므로 렌더러가 기본값을 만들어 줍니다.
+     std::shared_ptr<SampleSettings> m_loadedSettings = nullptr;
+     std::shared_ptr<GameSettings>   m_loadedGameSettings = nullptr;
+ 
