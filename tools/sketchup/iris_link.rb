@@ -82,6 +82,15 @@ module IRIS
                      extract_ms, @skipped)
           return true
         end
+
+        # 크기가 같은데 내용이 다르면 어디가 다른지 알려줍니다.
+        # 편집이 없는데 매번 달라지면 씬에 비결정적 필드가 들어 있다는 뜻이고,
+        # 그러면 "변경 없음" 판정이 영영 성립하지 않습니다 — 실제로 겪었습니다.
+        if @last_bytes && @last_bytes.bytesize == bytes.bytesize
+          off = first_diff(@last_bytes, bytes)
+          say format('  크기는 같은데 내용이 다릅니다 (첫 차이 오프셋 %d): %s',
+                     off, bytes.byteslice([off - 30, 0].max, 80).inspect) if off
+        end
         @skipped = 0
 
         t_send0 = Time.now
@@ -211,6 +220,9 @@ module IRIS
             'model'        => Sketchup.active_model.title.to_s,
             'unit'         => 'meter',
             'up_axis'      => 'z',
+            # 생성 시각은 **연결 단위 정보**입니다. 씬 페이로드에 넣으면 편집이
+            # 없어도 바이트가 매번 달라져 변경 감지가 무너집니다.
+            'generated'    => Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
             # 텍스처는 파일로 두고 경로만 알려줍니다. 라이브 씬은 파일로
             # 존재하지 않아 렌더러가 "씬 파일 옆"을 기준으로 쓸 수 없습니다.
             'texture_base' => IRIS::Probe.default_out_dir,
@@ -295,6 +307,21 @@ module IRIS
         @last_error = msg
         say "전송 실패: #{msg}"
         false
+      end
+
+      # 두 문자열이 처음 달라지는 바이트 위치. 같으면 nil.
+      def first_diff(a, b)
+        n = [a.bytesize, b.bytesize].min
+        step = 4096
+        i = 0
+        while i < n
+          len = [step, n - i].min
+          if a.byteslice(i, len) != b.byteslice(i, len)
+            len.times { |k| return i + k if a.getbyte(i + k) != b.getbyte(i + k) }
+          end
+          i += len
+        end
+        a.bytesize == b.bytesize ? nil : n
       end
 
       def comma(n)

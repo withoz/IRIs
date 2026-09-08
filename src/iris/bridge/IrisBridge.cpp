@@ -1,11 +1,40 @@
 #include "IrisBridge.h"
 
 #include <donut/engine/TextureCache.h>
+
+#include <cstring>
 #include <json/json.h>
 
 #include <memory>
 
 namespace de = donut::engine;
+
+namespace
+{
+    // 64비트씩 훑는 FNV-1a 변형. 36 MB 에 수 ms 로, 전송(47 ms)이나
+    // 씬 구축(20 ms)에 비하면 무시할 수 있습니다.
+    // 암호학적 용도가 아니라 "같은 바이트인가"만 봅니다.
+    uint64_t HashBytes(const uint8_t* data, size_t size)
+    {
+        constexpr uint64_t kOffset = 1469598103934665603ull;
+        constexpr uint64_t kPrime  = 1099511628211ull;
+
+        uint64_t h = kOffset ^ static_cast<uint64_t>(size);
+
+        const size_t words = size / sizeof(uint64_t);
+        const uint8_t* p = data;
+        for (size_t i = 0; i < words; ++i)
+        {
+            uint64_t w;
+            std::memcpy(&w, p, sizeof(w));
+            p += sizeof(w);
+            h = (h ^ w) * kPrime;
+        }
+        for (const uint8_t* end = data + size; p != end; ++p)
+            h = (h ^ *p) * kPrime;
+        return h;
+    }
+}
 
 namespace iris::bridge
 {
@@ -94,17 +123,43 @@ namespace iris::bridge
                 return false;
             }
 
-            size_t bytes = 0;
+            const uint64_t hash = HashBytes(blob.data(), blob.size());
+
+            size_t   bytes = 0;
+            uint64_t dup   = 0;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                // 렌더가 따라가지 못해 아직 안 가져간 씬이 있으면 **버리고 최신으로
-                // 갈아탑니다.** 큐에 쌓으면 편집이 빠를 때 지연만 늘어납니다.
-                if (!m_pending.empty())
-                    ++m_dropped;
-                m_pending = std::move(blob);
-                bytes     = m_pending.size();
+
+                // 내용이 같으면 무시합니다. 받아들이면 BLAS 를 다시 짓고 누적을
+                // 초기화해 화면이 수렴하지 못합니다.
+                if (m_hasLastHash && hash == m_lastHash)
+                {
+                    dup = ++m_duplicates;
+                }
+                else
+                {
+                    // 렌더가 따라가지 못해 아직 안 가져간 씬이 있으면 **버리고
+                    // 최신으로 갈아탑니다.** 큐에 쌓으면 편집이 빠를 때 지연만
+                    // 늘어납니다.
+                    if (!m_pending.empty())
+                        ++m_dropped;
+                    m_pending     = std::move(blob);
+                    m_lastHash    = hash;
+                    m_hasLastHash = true;
+                    bytes         = m_pending.size();
+                }
             }
-            say("씬 수신 " + std::to_string(bytes) + " bytes");
+
+            if (dup)
+            {
+                // 매번 찍으면 로그가 넘칩니다. 처음과 이후 100회마다만 알립니다.
+                if (dup == 1 || dup % 100 == 0)
+                    say("같은 씬이 다시 왔습니다 — 무시합니다 (누적 " + std::to_string(dup) + "회)");
+            }
+            else
+            {
+                say("씬 수신 " + std::to_string(bytes) + " bytes");
+            }
             return true;
         };
 
@@ -188,6 +243,12 @@ namespace iris::bridge
     {
         std::lock_guard<std::mutex> lock(m_texMutex);
         m_textures.clear();
+    }
+
+    uint64_t IrisBridge::DuplicatesIgnored() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_duplicates;
     }
 
     uint64_t IrisBridge::ScenesApplied() const

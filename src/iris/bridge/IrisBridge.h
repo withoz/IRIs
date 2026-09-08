@@ -78,6 +78,7 @@ namespace iris::bridge
         [[nodiscard]] protocol::PipeServerStats Stats() const;
         [[nodiscard]] std::string               LastError() const;
         [[nodiscard]] uint64_t                  ScenesApplied() const;
+        [[nodiscard]] uint64_t                  DuplicatesIgnored() const;
 
         void SetLog(std::function<void(const std::string&)> log);
 
@@ -97,6 +98,18 @@ namespace iris::bridge
         protocol::PipeServer                    m_server;
         uint64_t                                m_applied = 0;
         uint64_t                                m_dropped = 0;
+
+        // 같은 씬이 다시 오면 무시하기 위한 지문.
+        //
+        // 호스트가 내용이 같은 씬을 반복해 보내면 렌더러가 매번 BLAS 를 다시
+        // 짓고 누적을 초기화합니다 — **화면이 영원히 수렴하지 않습니다.**
+        // 실제로 그렇게 됐고, 로그에 478회 재로딩이 찍혔습니다.
+        //
+        // 호스트 쪽에서도 막지만(iris_link.rb), 프로토콜은 어떤 호스트가 붙어도
+        // 견뎌야 합니다. 여기서 한 번 더 막습니다.
+        uint64_t                                m_lastHash = 0;
+        bool                                    m_hasLastHash = false;
+        uint64_t                                m_duplicates = 0;
 
         mutable std::mutex                      m_texMutex;
         std::unordered_map<std::string, std::shared_ptr<donut::engine::LoadedTexture>> m_textures;

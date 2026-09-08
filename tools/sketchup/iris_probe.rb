@@ -581,7 +581,15 @@ module IRIS
             'title' => model.title,
             'file'  => model.path,
           },
-          'generated'    => Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+          # ⚠ 타임스탬프를 여기에 넣지 마십시오.
+          #
+          # 넣으면 **편집이 없어도 매 추출마다 바이트가 달라집니다.** 그러면
+          # "내용이 같으면 보내지 않는다"가 성립하지 않아 자동 동기화가 멈추지
+          # 않고, 렌더러는 매번 누적을 초기화해 화면이 영원히 수렴하지 않습니다.
+          # 실제로 그렇게 됐습니다 — 렌더러 로그에 재로딩 478회가 찍혔습니다.
+          #
+          # 씬 페이로드는 **내용만** 담습니다. 생성 시각 같은 것은 연결 단위
+          # 메시지(Hello)에 실립니다.
           'capabilities' => @caps,
           'materials'    => @materials.values,
           'views'        => (@scene_views_list = collect_views(model)),
