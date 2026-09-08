@@ -118,6 +118,11 @@ module IRIS
                    pack_ms, comma(bytes.bytesize), comma(sizes[:json]), comma(sizes[:bin]))
         say format('전송 %8.1f ms   %.0f MB/s', send_ms,
                    bytes.bytesize / 1048576.0 / [send_ms / 1000.0, 1e-9].max)
+        if @phase
+          say format('  └ 열기 %.1f · Hello %.1f · 쓰기 %.1f · Ack 대기 %.1f · Bye %.1f ms',
+                     @phase[:open].to_f, @phase[:hello].to_f, @phase[:write].to_f,
+                     @phase[:ack].to_f, @phase[:bye].to_f)
+        end
         say format('합계 %8.1f ms', extract_ms + pack_ms + send_ms)
 
         # 추출 중 우리 스스로 만든 무효화. 0이 아니면 그만큼 옵저버가
@@ -145,9 +150,13 @@ module IRIS
         path = File.join(dir, 'sync_timing.csv')
         head = !File.exist?(path)
         File.open(path, 'a:UTF-8') do |f|
-          f.puts('time,extract_ms,pack_ms,send_ms,total_ms,bytes,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts('time,extract_ms,pack_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,triangles,instances,defs_extracted,defs_cached') if head
+          ph = @phase || {}
           f.puts([Time.now.strftime('%H:%M:%S'),
                   format('%.1f', extract_ms), format('%.1f', pack_ms), format('%.1f', send_ms),
+                  format('%.1f', ph[:open].to_f),  format('%.1f', ph[:hello].to_f),
+                  format('%.1f', ph[:write].to_f), format('%.1f', ph[:ack].to_f),
+                  format('%.1f', ph[:bye].to_f),
                   format('%.1f', extract_ms + pack_ms + send_ms), bytes,
                   st['triangles'].to_i, st['instances'].to_i,
                   IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_extracted', 0).to_i,
@@ -409,8 +418,16 @@ module IRIS
         "#{b}#{b}.#{b}pipe#{b}#{name}"
       end
 
+      # 단계별 시간을 남깁니다.
+      #
+      # 전송이 1066 ms 인데 실제 쓰기는 12 ms 였습니다(bench_transport).
+      # 나머지 1000 ms 가 어디에 있는지는 **재서** 압니다. 두 번 틀렸습니다 —
+      # 처음엔 추출이라 했고 그다음엔 Ruby 쓰기라 했습니다. 둘 다 아니었습니다.
       def transmit(pipe, bytes)
+        @phase = {}
+        t = Time.now
         io = open_pipe(pipe_path(pipe))
+        @phase[:open] = (Time.now - t) * 1000.0
         return false unless io
 
         begin
@@ -418,9 +435,11 @@ module IRIS
           # 생성 시각과 텍스처 기준 경로는 **연결 단위 정보**입니다.
           # 씬 페이로드에 넣으면 편집이 없어도 바이트가 매번 달라져 변경
           # 감지가 무너집니다.
+          t = Time.now
           send_frame(io, MSG_HELLO, JSON.generate(hello_payload).b)
 
           type, _flags, payload = recv_frame(io)
+          @phase[:hello] = (Time.now - t) * 1000.0
           return fail_with("Hello 응답이 없습니다") unless type
           ack = begin
             JSON.parse(payload)
@@ -433,16 +452,22 @@ module IRIS
 
           # --- 씬 ---
           @seq = @seq.to_i + 1
+          t = Time.now
           send_frame(io, MSG_SYNC_BEGIN, JSON.generate('seq' => @seq).b)
           send_frame(io, MSG_SCENE_BLOB, bytes)
           send_frame(io, MSG_SYNC_END,   JSON.generate('seq' => @seq).b)
+          @phase[:write] = (Time.now - t) * 1000.0
 
+          t = Time.now
           type, _flags, payload = recv_frame(io)
+          @phase[:ack] = (Time.now - t) * 1000.0
           unless type == MSG_SYNC_ACK
             return fail_with("SyncAck 를 받지 못했습니다 (#{MSG_NAMES[type] || type})")
           end
 
+          t = Time.now
           send_frame(io, MSG_BYE, ''.b)
+          @phase[:bye] = (Time.now - t) * 1000.0
           @sent_count = @sent_count.to_i + 1
           @last_error = nil
           true
