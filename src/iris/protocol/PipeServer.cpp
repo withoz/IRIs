@@ -14,6 +14,14 @@
 
 namespace iris::protocol
 {
+    uint64_t ProcessSessionId()
+    {
+        static const uint64_t id = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        return id;
+    }
+
     namespace
     {
         std::string LastWinError(const char* what)
@@ -368,22 +376,9 @@ namespace iris::protocol
             {
                 const std::string helloJson(reinterpret_cast<const char*>(payload.data()), payload.size());
 
-                // 세션 번호. **프로세스마다 한 번** 정해집니다.
-                //
-                // 델타의 전제는 "렌더러가 이전에 보낸 지오메트리를 아직 들고
-                // 있다" 입니다. 렌더러를 다시 띄우면 그 전제가 깨지는데,
-                // 호스트는 그것을 알 방법이 없습니다 — 파이프는 그대로 열리고
-                // 이름도 같습니다. 그러면 호스트는 바뀐 것만 보내고 렌더러는
-                // 나머지를 영영 못 받습니다. **조용히 빈 화면이 됩니다.**
-                //
-                // 세션이 다르면 호스트가 전체를 다시 보냅니다.
-                static const uint64_t kSession = static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count());
-
                 std::string ack = "{\"protocol\":" + std::to_string(kProtocolVersion) +
                                   ",\"accepted\":true,\"renderer\":\"IRIS\",\"session\":" +
-                                  std::to_string(kSession) + "}";
+                                  std::to_string(ProcessSessionId()) + "}";
                 bool accept = true;
                 if (cb.onHello)
                     accept = cb.onHello(helloJson, ack);

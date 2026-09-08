@@ -110,17 +110,25 @@ namespace iris::bridge
                 m_textureBase = doc["texture_base"].asString();
             }
 
+            // ⚠ 세션 번호를 빠뜨리지 마십시오.
+            //
+            // 여기서 ack 를 통째로 덮어씁니다. PipeServer 가 만들어 둔 기본
+            // 응답은 사라집니다 — 실제로 그렇게 해서 델타가 켜지지 않았고,
+            // 호스트는 매번 전체를 보내면서도 아무 오류를 보지 못했습니다.
             ack = "{\"protocol\":" + std::to_string(protocol::kProtocolVersion) +
-                  ",\"accepted\":true,\"renderer\":\"IRIS\"}";
+                  ",\"accepted\":true,\"renderer\":\"IRIS\",\"session\":" +
+                  std::to_string(protocol::ProcessSessionId()) + "}";
             return true;
         };
 
         cb.onSceneBlob = [this, say](std::vector<uint8_t>&& blob, uint32_t flags, std::string& err) {
             if (flags & protocol::FrameFlag_Partial)
             {
-                // 부분 갱신은 5단계입니다. 지금 조용히 전체로 취급하면 화면이
-                // 틀리게 나오므로 명시적으로 거절합니다.
-                err = "부분 씬(Partial)은 아직 지원하지 않습니다";
+                // 델타(5단계)는 **프레임 플래그가 아니라 페이로드**로 표현합니다.
+                // 매니페스트는 항상 완전하고, 바뀌지 않은 정의만 `geom: "same"`
+                // 으로 표시되어 정점이 빠집니다. 그래서 이 플래그는 여전히
+                // 쓰이지 않으며, 켜져서 오면 우리가 모르는 형식입니다.
+                err = "부분 프레임(Partial)은 쓰지 않습니다 — 델타는 페이로드로 표현합니다";
                 return false;
             }
 
