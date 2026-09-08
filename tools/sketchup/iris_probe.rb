@@ -814,7 +814,12 @@ module IRIS
         @materials[key] = {
           'id'      => key,
           'name'    => (mat.name rescue ''),
-          'color'   => c ? [c.red / 255.0, c.green / 255.0, c.blue / 255.0] : [1.0, 1.0, 1.0],
+          # **선형 색으로 보냅니다.** SketchUp 의 Color 는 화면 표시용 sRGB 이고,
+          # 렌더러(와 05번 명세)는 선형을 기대합니다. 변환하지 않으면 모든 색이
+          # 밝게 뜹니다 — sRGB 0.5 는 선형 0.21 입니다.
+          'color'   => c ? [srgb_to_linear(c.red / 255.0),
+                            srgb_to_linear(c.green / 255.0),
+                            srgb_to_linear(c.blue / 255.0)] : [1.0, 1.0, 1.0],
           'alpha'   => (mat.alpha rescue 1.0),
           'type'    => (mat.materialType rescue nil),  # 0 solid / 1 textured / 2 colorized
           'texture' => tex ? {
@@ -828,6 +833,11 @@ module IRIS
           } : nil,
         }
         key
+      end
+
+      # sRGB -> 선형. 표준 변환식입니다.
+      def srgb_to_linear(c)
+        c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055)**2.4
       end
 
       # ------------------------------------------------------------ 저장된 시점

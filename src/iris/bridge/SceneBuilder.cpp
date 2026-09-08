@@ -192,18 +192,50 @@ namespace iris::bridge
         for (const auto& sm : src.materials)
         {
             auto m = m_typeFactory->CreateMaterial();
-            m->name               = ToNativeNarrow(sm.name.empty() ? sm.id : sm.name);
-            m->baseOrDiffuseColor = float3(sm.color[0], sm.color[1], sm.color[2]);
-            m->opacity            = sm.alpha;
+            m->name    = ToNativeNarrow(sm.name.empty() ? sm.id : sm.name);
+            m->opacity = sm.alpha;
 
-            // SketchUp 은 PBR 파라미터를 주지 않습니다. 임시 기본값이며
-            // 미결정 B(PBR 파라미터 범위)가 정해지면 여기가 바뀝니다.
-            m->roughness = 0.5f;
+            const bool hasTexture = sm.hasTexture && !sm.texture.exportPath.empty();
+
+            // **텍스처가 있으면 기본색은 흰색입니다.**
+            //
+            // 프로브가 내보내는 PNG 는 `image_rep(true)` 로 뽑은 것이라 **이미
+            // 재질 색이 입혀져 있습니다**. 여기서 색을 또 곱하면 두 번 착색됩니다.
+            // 게다가 SketchUp 의 Material#color 는 텍스처 재질일 때 텍스처의
+            // **평균색**을 돌려주므로, 곱하면 전체가 그 색으로 어두워집니다.
+            m->baseOrDiffuseColor = hasTexture
+                ? float3(1.0f, 1.0f, 1.0f)
+                : float3(sm.color[0], sm.color[1], sm.color[2]);
+
+            // SketchUp 은 PBR 파라미터를 주지 않습니다. 아래는 건축 재질에 대한
+            // 잠정 휴리스틱이며, 미결정 B(PBR 파라미터 범위)가 정해지면 바뀝니다.
             m->metalness = 0.0f;
-            m->domain    = (sm.alpha < 0.999f) ? de::MaterialDomain::AlphaBlended
-                                               : de::MaterialDomain::Opaque;
+            m->roughness = 0.5f;
 
-            if (sm.hasTexture && !sm.texture.exportPath.empty() && (m_textureCache || m_textureLoader))
+            if (sm.alpha < 0.999f && !hasTexture)
+            {
+                // **반투명한데 텍스처가 없으면 유리로 봅니다.**
+                //
+                // 건축 모델에서 알파가 걸린 단색 재질은 거의 항상 유리입니다
+                // (이 모델에도 'Translucent Glass', 'black glass' 가 있습니다).
+                // AlphaBlended 로 두면 굴절도 반사도 없는 '유령'처럼 보입니다.
+                // 패스트레이서가 유리를 제대로 그릴 수 있는데 그러지 않을 이유가
+                // 없습니다.
+                //
+                // 텍스처가 있는 반투명은 잎사귀 컷아웃일 수 있어 그대로 둡니다.
+                m->domain             = de::MaterialDomain::Transmissive;
+                m->transmissionFactor = 1.0f - sm.alpha;
+                m->roughness          = 0.05f;
+                m->opacity            = 1.0f;   // 투과로 표현하므로 불투명도는 되돌립니다
+                ++stats.glassMaterials;
+            }
+            else
+            {
+                m->domain = (sm.alpha < 0.999f) ? de::MaterialDomain::AlphaBlended
+                                                : de::MaterialDomain::Opaque;
+            }
+
+            if (hasTexture && (m_textureCache || m_textureLoader))
             {
                 const std::filesystem::path p = m_baseDir / Utf8Path(sm.texture.exportPath);
                 std::error_code ec;

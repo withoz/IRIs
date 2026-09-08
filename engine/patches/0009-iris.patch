@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 16:56:00 +0900
+Subject: [PATCH 9/9] =?UTF-8?q?iris:=20=EC=9C=A0=EB=A6=AC=20=ED=95=B4?=
+ =?UTF-8?q?=EC=84=9D=20=ED=86=B5=EA=B3=84=20=EB=A1=9C=EA=B7=B8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ Rtxpt/Iris/IrisScene.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index d2c5a68..683d4de 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -233,6 +233,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               (unsigned long long)stats.triangles, (unsigned long long)stats.vertices, stats.maxDepth);
+     log::info("IRIS: 재질 상속 — 상속 버킷 %zu · 인스턴스 재질 적용 %zu곳",
+               stats.inheritingBuckets, stats.overriddenSubInstances);
++    log::info("IRIS: 유리로 해석한 머티리얼 %zu개 (반투명 + 텍스처 없음)",
++              stats.glassMaterials);
+ 
+     // --- IRIS 기본 설정 ---
+     //

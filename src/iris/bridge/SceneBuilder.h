@@ -43,6 +43,7 @@ namespace iris::bridge
         size_t   instances   = 0;   // MeshInstance 개수
         size_t   materials   = 0;
         size_t   textures    = 0;
+        size_t   glassMaterials = 0;   // 반투명 + 텍스처 없음 -> 유리로 해석
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
         size_t   cameras     = 0;
