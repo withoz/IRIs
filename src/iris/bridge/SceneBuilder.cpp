@@ -186,6 +186,10 @@ namespace iris::bridge
 
         auto& buffers = *mesh->buffers;
 
+        // 버킷 순서와 같은 길이. 나중에 인스턴스 재질을 어디에 꽂을지 정합니다.
+        std::vector<bool> inheritFlags;
+        inheritFlags.reserve(def.meshes.size());
+
         // 먼저 총량을 세어 한 번에 확보합니다. 버킷마다 늘리면 재할당이 반복됩니다.
         size_t totalVerts = 0, totalIdx = 0;
         for (const auto& b : def.meshes)
@@ -215,8 +219,15 @@ namespace iris::bridge
             geom->numVertices        = vcount;
             geom->objectSpaceBounds  = BoundsOf(pos, vcount);
 
+            // 재질이 없는 버킷은 **상속 대상**입니다. 기본 머티리얼을 넣어 두되
+            // (Donut 은 머티리얼 없는 프리미티브에서 죽습니다) 어느 자리가
+            // 상속인지 기록해 두었다가 인스턴스 재질로 덮어씁니다.
             auto it = m_materials.find(b.materialId);
-            geom->material = (it != m_materials.end()) ? it->second : m_defaultMaterial;
+            const bool inherits = (it == m_materials.end());
+            geom->material = inherits ? m_defaultMaterial : it->second;
+            inheritFlags.push_back(inherits);
+            if (inherits)
+                ++stats.inheritingBuckets;
 
             // 인덱스는 버킷 안에서 국소적입니다. glTF 임포터도 그대로 넣고
             // vertexOffsetInMesh 로 보정합니다 — 같은 규약을 씁니다.
@@ -257,6 +268,8 @@ namespace iris::bridge
             stats.vertices  += vcount;
             ++stats.geometries;
         }
+
+        m_inherits[def.id] = std::move(inheritFlags);
 
         ++stats.meshes;
         return mesh;
@@ -301,13 +314,53 @@ namespace iris::bridge
                 if (it == m_meshes.end())
                     it = m_meshes.emplace(def->id, BuildMesh(src, *def, stats)).first;
 
-                graph->AttachLeafNode(node, m_typeFactory->CreateMeshInstance(it->second));
+                auto instance = m_typeFactory->CreateMeshInstance(it->second);
+                graph->AttachLeafNode(node, instance);
                 ++stats.instances;
+
+                ApplyInheritedMaterial(*instance, def->id, n.materialId, stats);
             }
 
             if (!def->children.empty())
                 BuildNodes(src, graph, node, def->children, depth + 1, stats);
         }
+    }
+
+    void SceneBuilder::ApplyInheritedMaterial(de::MeshInstance& instance,
+                                              const std::string& defId,
+                                              const std::string& instanceMaterialId,
+                                              BuildStats& stats)
+    {
+        if (instanceMaterialId.empty() || !m_applyInstanceMaterials)
+            return;
+
+        auto flagIt = m_inherits.find(defId);
+        if (flagIt == m_inherits.end())
+            return;
+
+        auto matIt = m_materials.find(instanceMaterialId);
+        if (matIt == m_materials.end())
+            return;
+
+        const std::vector<bool>& flags = flagIt->second;
+        std::vector<std::shared_ptr<de::Material>> overrides;
+        size_t applied = 0;
+
+        for (size_t i = 0; i < flags.size(); ++i)
+        {
+            if (!flags[i])
+                continue;
+            if (overrides.empty())
+                overrides.resize(flags.size());
+            overrides[i] = matIt->second;
+            ++applied;
+        }
+
+        if (applied == 0)
+            return;   // 이 정의에는 상속할 자리가 없습니다
+
+        stats.overriddenSubInstances += applied;
+        m_applyInstanceMaterials(instance, std::move(overrides));
     }
 
     // ---------------------------------------------------------------- 환경광
@@ -437,6 +490,7 @@ namespace iris::bridge
 
         m_materials.clear();
         m_meshes.clear();
+        m_inherits.clear();
 
         auto graph = std::make_shared<de::SceneGraph>();
 

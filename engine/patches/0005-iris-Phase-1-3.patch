@@ -1,0 +1,154 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 14:39:06 +0900
+Subject: [PATCH 5/5] =?UTF-8?q?iris:=20=EC=9E=AC=EC=A7=88=20=EC=83=81?=
+ =?UTF-8?q?=EC=86=8D=20(Phase=201-3)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SketchUp 에서 면에 재질이 없으면 상위 인스턴스의 재질을 쓴다. 지금까지는
+기본 회색으로 나오고 있었다 — 골프존 109곳, 세종 108곳.
+
+RTXPT 는 재질 인덱스를 서브인스턴스(인스턴스×지오메트리) 단위로 들고 있다
+(SubInstanceData::GlobalGeometryIndex_PTMaterialDataIndex). 그래서 지오메트리를
+복제하지 않고 인스턴스마다 다른 재질을 낼 수 있다 — 05번 5절의 설계 그대로다.
+
+- MeshInstanceExtension::IrisPerGeometryMaterial  인스턴스별 덮어쓰기
+- MaterialsBaker::Update 가 그것을 우선한다
+- MaterialsBaker::CreateRenderPassesAndLoadMaterials 가 덮어쓰기 전용
+  머티리얼도 함께 등록한다. 씬 그래프의 머티리얼 목록은 지오메트리를
+  통해서만 채워지므로, 이걸 빠뜨리면 PTMaterial 이 없어 널 참조로 죽는다
+  (실제로 죽었다)
+- 등록이 빠진 경우를 대비해 원래 재질로 되돌리는 방어도 넣었다
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp           | 11 +++++++
+ Rtxpt/Materials/MaterialsBaker.cpp | 47 ++++++++++++++++++++++++++++--
+ Rtxpt/SampleCommon/ExtendedScene.h | 18 +++++++++++-
+ 3 files changed, 73 insertions(+), 3 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 492a84a..0b73f20 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -201,6 +201,15 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+             return loaded;
+         });
+ 
++    // 재질 상속을 인스턴스에 실어 줍니다. SceneBuilder 는 RTXPT 타입을 모르므로
++    // 여기서 MeshInstanceEx 로 내려 꽂습니다.
++    builder.SetInstanceMaterialApplier(
++        [](MeshInstance& instance, std::vector<std::shared_ptr<Material>>&& overrides)
++        {
++            if (auto* ex = dynamic_cast<MeshInstanceExtension*>(&instance))
++                ex->IrisPerGeometryMaterial = std::move(overrides);
++        });
++
+     // SketchUp 은 광원을 주지 않습니다. 기본 하늘을 넣지 않으면 화면이 검게
+     // 나옵니다. 경로는 Assets 기준 상대경로입니다.
+     builder.SetEnvironmentMap("EnvironmentMaps/kloofendal_48d_partly_cloudy_puresky_4k_cube_bc6u.dds");
+@@ -222,6 +231,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               stats.materials, stats.textures, stats.cameras);
+     log::info("IRIS: 삼각형 %llu · 정점 %llu · 최대 중첩 %zu",
+               (unsigned long long)stats.triangles, (unsigned long long)stats.vertices, stats.maxDepth);
++    log::info("IRIS: 재질 상속 — 상속 버킷 %zu · 인스턴스 재질 적용 %zu곳",
++              stats.inheritingBuckets, stats.overriddenSubInstances);
+ 
+     // ExtendedScene 이 로딩 후에 하는 머티리얼 후처리를 같이 합니다.
+     // ProcessNodesRecursive 는 JSON 씬의 설정 노드를 다루는 것이라 .irisb 에는
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index 913d612..879c9bf 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -869,7 +869,30 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+ 
+         std::shared_ptr<SceneGraph> sceneGraph = scene->GetSceneGraph();
+         auto& materials = sceneGraph->GetMaterials();
+-        for (auto& material : materials)
++
++        // IRIS: 인스턴스 재질 덮어쓰기로만 쓰이는 머티리얼도 함께 넣는다.
++        //
++        // 씬 그래프의 머티리얼 목록은 **지오메트리를 통해서만** 채워진다
++        // (SceneGraph::RegisterLeaf). 어떤 머티리얼이 인스턴스 덮어쓰기에만
++        // 쓰이면 그 목록에 없고, 그러면 PTMaterial 이 만들어지지 않아
++        // 히트 시 널 참조로 죽는다. 실제로 그렇게 죽었다.
++        std::vector<std::shared_ptr<Material>> allMaterials(materials.begin(), materials.end());
++        {
++            std::unordered_set<Material*> seen;
++            for (const auto& m : allMaterials)
++                seen.insert(m.get());
++            for (const auto& inst : sceneGraph->GetMeshInstances())
++            {
++                auto ex = std::dynamic_pointer_cast<MeshInstanceExtension>(inst);
++                if (!ex)
++                    continue;
++                for (const auto& m : ex->IrisPerGeometryMaterial)
++                    if (m && seen.insert(m.get()).second)
++                        allMaterials.push_back(m);
++            }
++        }
++
++        for (auto& material : allMaterials)
+         {
+             std::shared_ptr<MaterialEx> materialEx = std::dynamic_pointer_cast<MaterialEx>(material);
+             if (materialEx == nullptr)
+@@ -1056,7 +1079,27 @@ void MaterialsBaker::Update(nvrhi::ICommandList* commandList, const std::shared_
+         {
+             const auto& geometry = mesh->geometries[geometryIndex];
+             assert( geometry->material != nullptr && "No handling for null materials!" );
+-            std::shared_ptr<PTMaterial> materialPT = PTMaterial::SafeCast(geometry->material);
++
++            // IRIS: 재질 상속. 이 인스턴스가 이 지오메트리에 다른 재질을
++            // 지정했으면 그것을 씁니다. 지오메트리는 한 벌만 두고 인스턴스마다
++            // 다른 재질이 나옵니다 — 재질 인덱스가 서브인스턴스 단위라 가능합니다.
++            std::shared_ptr<Material> effectiveMaterial = geometry->material;
++            if (const auto instanceEx = std::dynamic_pointer_cast<MeshInstanceExtension>(instance))
++            {
++                const auto& ovr = instanceEx->IrisPerGeometryMaterial;
++                if (geometryIndex < ovr.size() && ovr[geometryIndex] != nullptr)
++                    effectiveMaterial = ovr[geometryIndex];
++            }
++
++            std::shared_ptr<PTMaterial> materialPT = PTMaterial::SafeCast(effectiveMaterial);
++            if (materialPT == nullptr && effectiveMaterial != geometry->material)
++            {
++                // IRIS: 덮어쓰기 머티리얼이 등록되지 않았다면 지오메트리 것으로
++                // 되돌린다. 색이 틀리는 편이 죽는 것보다 낫다.
++                donut::log::warning("IRIS: 인스턴스 덮어쓰기 머티리얼에 PTMaterial 이 없습니다 — 원래 재질로 되돌립니다");
++                effectiveMaterial = geometry->material;
++                materialPT = PTMaterial::SafeCast(effectiveMaterial);
++            }
+             assert(materialPT != nullptr && "Unknown error - should never have happened" );
+ 
+             UpdateSubInstanceData(subInstanceData[subInstanceIndex], scene, *instance, *geometry, geometryIndex, *materialPT);
+diff --git a/Rtxpt/SampleCommon/ExtendedScene.h b/Rtxpt/SampleCommon/ExtendedScene.h
+index 5beb0a0..2fd0e16 100644
+--- a/Rtxpt/SampleCommon/ExtendedScene.h
++++ b/Rtxpt/SampleCommon/ExtendedScene.h
+@@ -53,7 +53,23 @@ struct MeshInstanceExtension
+     std::vector<LightSamplerLink>       PerGeometryLightSamplerLinks;
+     std::weak_ptr<LightExtension>       ProxiedAnalyticLight;
+ 
+-    void Copy(MeshInstanceExtension& src) { PerGeometryLightSamplerLinks = src.PerGeometryLightSamplerLinks; }
++    // IRIS: 재질 상속.
++    //
++    // SketchUp 에서 면에 재질이 없으면 상위 인스턴스의 재질을 씁니다. 같은
++    // 정의가 인스턴스마다 다른 색으로 보일 수 있습니다. glTF 는 이것을 못 하지만
++    // (메시를 복제해야 하므로 인스턴싱 이득이 사라짐) 레이트레이서는 할 수
++    // 있습니다 — 재질 인덱스가 서브인스턴스(인스턴스×지오메트리) 단위이기
++    // 때문입니다(SubInstanceData).
++    //
++    // 비어 있으면 덮어쓰기 없음. 아니면 지오메트리 개수와 같은 길이이고,
++    // 채워진 자리만 그 인스턴스에서 다른 재질을 씁니다.
++    std::vector<std::shared_ptr<donut::engine::Material>> IrisPerGeometryMaterial;
++
++    void Copy(MeshInstanceExtension& src)
++    {
++        PerGeometryLightSamplerLinks = src.PerGeometryLightSamplerLinks;
++        IrisPerGeometryMaterial      = src.IrisPerGeometryMaterial;
++    }
+ };
+ 
+ class MeshInstanceEx : public donut::engine::MeshInstance, public MeshInstanceExtension

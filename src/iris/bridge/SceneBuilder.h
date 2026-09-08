@@ -142,6 +142,12 @@ namespace iris::bridge
                         const std::vector<protocol::Node>& children,
                         int depth, BuildStats& stats);
 
+        // 인스턴스에 지정된 재질을, 정의 안의 "재질 없는" 버킷 자리에 꽂습니다.
+        void ApplyInheritedMaterial(donut::engine::MeshInstance& instance,
+                                    const std::string& defId,
+                                    const std::string& instanceMaterialId,
+                                    BuildStats& stats);
+
         // 기본 환경광. 자세한 이유는 SetEnvironmentMap 주석 참조.
         void BuildEnvironmentLight(const std::shared_ptr<donut::engine::SceneGraph>& graph,
                                    const std::shared_ptr<donut::engine::SceneGraphNode>& parent,
