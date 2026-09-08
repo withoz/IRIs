@@ -65,9 +65,11 @@ module IRIS
         return say('씬 추출에 실패했습니다.') unless scene
         extract_ms = (Time.now - t_extract0) * 1000.0
 
-        t_pack0 = Time.now
-        bytes, sizes = IRIS::Probe.pack_binary(scene)
-        pack_ms = (Time.now - t_pack0) * 1000.0
+        # **직렬화는 연결 뒤로 미룹니다.**
+        #
+        # 무엇을 보낼지는 렌더러가 무엇을 갖고 있느냐에 달렸고, 그건 Hello 를
+        # 주고받아야 압니다. 미리 직렬화하면 델타를 정할 수 없습니다.
+        pack_ms = 0.0
 
         # **결과로 판단합니다.** 캐시가 "바뀌었다"고 해도 만들어진 바이트가
         # 지난번과 같으면 보내지 않습니다.
@@ -77,8 +79,11 @@ module IRIS
         # 수렴하지 않습니다. 무효화가 왜 생겼는지와 무관하게, 내용이 같으면
         # 보내지 않는 것이 옳습니다.
         #
-        # 비교는 memcmp 라 36 MB 에 수 ms 입니다. 전송(47 ms)보다 훨씬 쌉니다.
-        if !force && @last_bytes && @last_bytes == bytes
+        # 비교는 매니페스트 JSON 하나입니다. 지오메트리는 정의마다 **판(gen)**
+        # 이 붙어 있고 다시 추출될 때만 올라가므로, 매니페스트만 같으면 씬 전체가
+        # 같습니다. 36 MB 를 들고 있으면서 비교할 필요가 없어졌습니다.
+        sig = IRIS::Probe.plan_binary(scene)[:json]
+        if !force && @last_sig && @last_sig == sig
           @skipped = @skipped.to_i + 1
 
           # 무효화 표시는 **증명된 거짓**입니다 — 다시 뽑아 봤는데 내용이
@@ -98,17 +103,18 @@ module IRIS
         # 크기가 같은데 내용이 다르면 어디가 다른지 알려줍니다.
         # 편집이 없는데 매번 달라지면 씬에 비결정적 필드가 들어 있다는 뜻이고,
         # 그러면 "변경 없음" 판정이 영영 성립하지 않습니다 — 실제로 겪었습니다.
-        if @last_bytes && @last_bytes.bytesize == bytes.bytesize
-          off = first_diff(@last_bytes, bytes)
-          say format('  크기는 같은데 내용이 다릅니다 (첫 차이 오프셋 %d): %s',
-                     off, bytes.byteslice([off - 30, 0].max, 80).inspect) if off
+        if @last_sig && @last_sig.bytesize == sig.bytesize && @last_sig != sig
+          off = first_diff(@last_sig, sig)
+          say format('  매니페스트 크기는 같은데 내용이 다릅니다 (오프셋 %d): %s',
+                     off, sig.byteslice([off - 30, 0].max, 80).inspect) if off
         end
         @skipped = 0
 
         t_send0 = Time.now
-        ok = transmit(pipe, bytes)
-        send_ms = (Time.now - t_send0) * 1000.0
-        @last_bytes = bytes if ok
+        ok, bytes, sizes, pack_ms = transmit(pipe, scene, force: force)
+        send_ms = (Time.now - t_send0) * 1000.0 - pack_ms
+        @last_sig = sig if ok
+        return false unless bytes
 
         st = scene['stats'] || {}
         say ''
@@ -120,6 +126,11 @@ module IRIS
         unless pp.empty?
           say format('  └ 블롭 %.1f · JSON %.1f · 조립 %.1f ms',
                      pp[:blob_ms].to_f, pp[:json_ms].to_f, pp[:join_ms].to_f)
+        end
+        gc = IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts : nil
+        if gc && gc[:skipped] > 0
+          say format('  └ 지오메트리 %d개 실음 / %d개 생략 (렌더러가 이미 보유)',
+                     gc[:sent], gc[:skipped])
         end
         say format('전송 %8.1f ms   %.0f MB/s', send_ms,
                    bytes.bytesize / 1048576.0 / [send_ms / 1000.0, 1e-9].max)
@@ -155,7 +166,7 @@ module IRIS
         path = File.join(dir, 'sync_timing.csv')
         head = !File.exist?(path)
         File.open(path, 'a:UTF-8') do |f|
-          f.puts('time,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts('time,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,geom_sent,geom_skipped,triangles,instances,defs_extracted,defs_cached') if head
           ph = @phase || {}
           pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
           f.puts([Time.now.strftime('%H:%M:%S'),
@@ -167,6 +178,8 @@ module IRIS
                   format('%.1f', ph[:write].to_f), format('%.1f', ph[:ack].to_f),
                   format('%.1f', ph[:bye].to_f),
                   format('%.1f', extract_ms + pack_ms + send_ms), bytes,
+                  (IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts[:sent] : 0),
+                  (IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts[:skipped] : 0),
                   st['triangles'].to_i, st['instances'].to_i,
                   IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_extracted', 0).to_i,
                   IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_cached', 0).to_i].join(','))
@@ -432,13 +445,23 @@ module IRIS
       # 전송이 1066 ms 인데 실제 쓰기는 12 ms 였습니다(bench_transport).
       # 나머지 1000 ms 가 어디에 있는지는 **재서** 압니다. 두 번 틀렸습니다 —
       # 처음엔 추출이라 했고 그다음엔 Ruby 쓰기라 했습니다. 둘 다 아니었습니다.
-      def transmit(pipe, bytes)
+      # 연결하고, 무엇을 보낼지 정하고, 보냅니다.
+      #
+      # 순서가 중요합니다. **무엇을 보낼지는 렌더러가 무엇을 갖고 있느냐에
+      # 달렸고**, 그건 Hello 를 주고받아야 압니다. 그래서 직렬화가 연결 뒤에
+      # 옵니다.
+      #
+      # 반환: [성공?, 보낸바이트, 크기, 직렬화ms]
+      def transmit(pipe, scene, force: false)
         @phase = {}
         t = Time.now
         io = open_pipe(pipe_path(pipe))
         @phase[:open] = (Time.now - t) * 1000.0
-        return false unless io
+        return [false, nil, nil, 0.0] unless io
 
+        bytes = nil
+        sizes = nil
+        pack_ms = 0.0
         begin
           # --- Hello ---
           # 생성 시각과 텍스처 기준 경로는 **연결 단위 정보**입니다.
@@ -449,15 +472,42 @@ module IRIS
 
           type, _flags, payload = recv_frame(io)
           @phase[:hello] = (Time.now - t) * 1000.0
-          return fail_with("Hello 응답이 없습니다") unless type
+          unless type
+            fail_with('Hello 응답이 없습니다')
+            return [false, nil, nil, 0.0]
+          end
           ack = begin
             JSON.parse(payload)
           rescue StandardError
             {}
           end
           unless type == MSG_HELLO_ACK && ack['accepted']
-            return fail_with("렌더러가 연결을 거절했습니다: #{ack['reason'] || MSG_NAMES[type] || type}")
+            fail_with("렌더러가 연결을 거절했습니다: #{ack['reason'] || MSG_NAMES[type] || type}")
+            return [false, nil, nil, 0.0]
           end
+
+          # **세션이 다르면 렌더러는 아무것도 갖고 있지 않습니다.**
+          #
+          # 렌더러를 다시 띄워도 파이프는 같은 이름으로 열립니다. 호스트가
+          # 그것을 모르면 바뀐 것만 보내고, 렌더러는 나머지를 영영 못 받아
+          # **조용히 빈 화면**이 됩니다. 세션 번호가 그것을 막습니다.
+          session = ack['session']
+          if force || session.nil? || session != @session
+            if @session && session != @session
+              say '렌더러가 새로 떴습니다 — 전체를 보냅니다.'
+            end
+            @session  = session
+            @sent_gen = {}
+          end
+
+          t = Time.now
+          plan  = IRIS::Probe.plan_binary(scene, skip_geom: @sent_gen)
+          bytes = plan[:head] + plan[:json] + plan[:plan].join
+          sizes = plan[:sizes]
+          pack_ms = (Time.now - t) * 1000.0
+          IRIS::Probe.pack_phase[:join_ms] =
+            pack_ms - IRIS::Probe.pack_phase[:blob_ms].to_f - IRIS::Probe.pack_phase[:json_ms].to_f
+          @phase[:defs_full] = plan[:sent_gen].size
 
           # --- 씬 ---
           @seq = @seq.to_i + 1
@@ -471,17 +521,22 @@ module IRIS
           type, _flags, payload = recv_frame(io)
           @phase[:ack] = (Time.now - t) * 1000.0
           unless type == MSG_SYNC_ACK
-            return fail_with("SyncAck 를 받지 못했습니다 (#{MSG_NAMES[type] || type})")
+            fail_with("SyncAck 를 받지 못했습니다 (#{MSG_NAMES[type] || type})")
+            return [false, bytes, sizes, pack_ms]
           end
+
+          # 렌더러가 받은 지오메트리를 기억합니다. 다음 번엔 건너뜁니다.
+          @sent_gen = plan[:sent_gen]
 
           t = Time.now
           send_frame(io, MSG_BYE, ''.b)
           @phase[:bye] = (Time.now - t) * 1000.0
           @sent_count = @sent_count.to_i + 1
           @last_error = nil
-          true
+          [true, bytes, sizes, pack_ms]
         rescue StandardError => e
           fail_with("#{e.class} — #{e.message}")
+          [false, bytes, sizes, pack_ms]
         ensure
           io.close rescue nil
         end

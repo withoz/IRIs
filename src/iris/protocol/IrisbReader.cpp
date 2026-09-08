@@ -543,6 +543,7 @@ namespace iris::protocol
                 d.isGroup       = GetBool(dv, "is_group");
                 d.instanceCount = static_cast<uint32_t>(GetInt64(dv, "instance_count"));
                 ReadLight(dv["light"], d.light);
+                d.geometryUnchanged = (GetString(dv, "geom") == "same");
 
                 if (!parser.ReadDefinitionBody(dv, "정의 " + key, d))
                 {

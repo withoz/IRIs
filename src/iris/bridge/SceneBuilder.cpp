@@ -426,13 +426,61 @@ namespace iris::bridge
             if (def->light.Valid())
                 BuildLight(graph, node, def->light, stats);
 
+            std::shared_ptr<de::MeshInfo> mesh;
+
             if (!def->meshes.empty())
             {
                 auto it = m_meshes.find(def->id);
                 if (it == m_meshes.end())
+                {
                     it = m_meshes.emplace(def->id, BuildMesh(src, *def, stats)).first;
+                    if (m_meshCache)
+                    {
+                        m_meshCache->meshes[def->id]   = it->second;
+                        auto ih = m_inherits.find(def->id);
+                        if (ih != m_inherits.end())
+                            m_meshCache->inherits[def->id] = ih->second;
+                    }
+                }
+                mesh = it->second;
+            }
+            else if (def->geometryUnchanged && m_meshCache)
+            {
+                // 호스트가 "이건 안 바뀌었다"고 했습니다. 이전 동기화에서 만든
+                // 것을 그대로 씁니다 — 정점 업로드도 BLAS 재구축도 없습니다.
+                auto it = m_meshes.find(def->id);
+                if (it != m_meshes.end())
+                {
+                    mesh = it->second;
+                }
+                else
+                {
+                    auto ch = m_meshCache->meshes.find(def->id);
+                    if (ch != m_meshCache->meshes.end())
+                    {
+                        mesh = ch->second;
+                        m_meshes.emplace(def->id, mesh);
+                        auto ih = m_meshCache->inherits.find(def->id);
+                        if (ih != m_meshCache->inherits.end())
+                            m_inherits[def->id] = ih->second;
+                        ++stats.meshesReused;
+                    }
+                    else
+                    {
+                        // 호스트가 우리가 갖고 있다고 믿었는데 없습니다.
+                        // 조용히 빠뜨리면 그 물체가 화면에서 사라집니다 —
+                        // 반드시 드러나야 합니다.
+                        ++stats.meshesMissing;
+                        if (stats.meshesMissing <= 5)
+                            stats.warnings.push_back(
+                                "델타: 재사용해야 할 메시가 없습니다 — " + def->id);
+                    }
+                }
+            }
 
-                auto instance = m_typeFactory->CreateMeshInstance(it->second);
+            if (mesh)
+            {
+                auto instance = m_typeFactory->CreateMeshInstance(mesh);
                 graph->AttachLeafNode(node, instance);
                 ++stats.instances;
 

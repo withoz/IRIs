@@ -47,6 +47,8 @@ namespace iris::bridge
         size_t   glassMaterials = 0;   // 반투명 + 텍스처 없음 -> 유리로 해석
         size_t   pointLights    = 0;
         size_t   spotLights     = 0;   // 면광원 근사도 여기에 포함됩니다
+        size_t   meshesReused   = 0;   // 델타: 다시 만들지 않고 재사용한 정의
+        size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)
         size_t   emissiveMaterials = 0;   // Enscape 자체발광
         size_t   specularOverrides = 0;   // Specular 가 0.5 가 아닌 재질
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
@@ -129,6 +131,24 @@ namespace iris::bridge
             m_photometricScale = (cdPerUnit > 1e-6f) ? (1.0f / cdPerUnit) : 1.0f;
         }
 
+        // **델타** — 이전 동기화에서 만든 메시를 넘겨받습니다.
+        //
+        // 호스트는 바뀐 정의의 지오메트리만 보냅니다. 나머지는 `geom: "same"`
+        // 으로 표시되어 오고, 그때는 여기 있는 것을 그대로 씁니다.
+        //
+        // 텍스처 캐시와 같은 이유로 **바깥에서** 소유합니다 — 이 빌더는 동기화
+        // 한 번마다 새로 만들어지므로 스스로는 아무것도 기억하지 못합니다.
+        //
+        // 상속 마스크(m_inherits)도 함께 넘어갑니다. 인스턴스 재질을 어느
+        // 지오메트리 자리에 꽂을지가 거기 들어 있고, 메시를 다시 만들지 않으면
+        // 그 정보도 다시 만들어지지 않기 때문입니다.
+        struct MeshCache
+        {
+            std::unordered_map<std::string, std::shared_ptr<donut::engine::MeshInfo>> meshes;
+            std::unordered_map<std::string, std::vector<bool>>                        inherits;
+        };
+        void SetMeshCache(std::shared_ptr<MeshCache> cache) { m_meshCache = std::move(cache); }
+
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
         std::shared_ptr<donut::engine::SceneGraph> Build(const protocol::Scene& src, BuildStats& stats);
 
@@ -151,6 +171,8 @@ namespace iris::bridge
         // 정의별로 "이 버킷은 재질을 상속한다"를 기록합니다. 지오메트리 순서와
         // 같은 길이이며, 인스턴스 재질을 어디에 꽂을지 정하는 데 씁니다.
         std::unordered_map<std::string, std::vector<bool>> m_inherits;
+
+        std::shared_ptr<MeshCache> m_meshCache;
 
         void BuildMaterials(const protocol::Scene& src, BuildStats& stats);
 

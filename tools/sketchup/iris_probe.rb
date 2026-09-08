@@ -175,9 +175,18 @@ module IRIS
         kids
       end
 
+      # 지오메트리 판.
+      #
+      # 델타는 "렌더러가 이 정의의 지오메트리를 이미 갖고 있는가"를 알아야
+      # 합니다. 다시 추출할 때마다 판을 올리면, 호스트는 판만 비교하면 됩니다.
+      # 내용을 다시 해싱할 필요가 없습니다 — 추출은 곧 변경이기 때문입니다.
+      def next_gen
+        @gen = @gen.to_i + 1
+      end
+
       def store(defn, meshes, mats, verts, tris, faces, seen, kids = nil)
         @entries[defn.entityID] = {
-          schema: CACHE_SCHEMA,
+          schema: CACHE_SCHEMA, gen: next_gen,
           kids: kids, esize: (defn.entities.size rescue nil),
           meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces,
           # 능력 플래그(법선·UV 추출 성공 여부)도 함께 보관한다.
@@ -395,14 +404,44 @@ module IRIS
 
       # scene 해시를 [manifest_hash, binary_string] 으로 나눈다.
       # scene 자체는 건드리지 않는다 (last_scene 이 계속 유효해야 한다).
-      def split_binary(scene)
-        blob = +''.b
+      # 블롭을 **만들지 않고** 계획만 세웁니다.
+      #
+      # 조각(미리 인코딩된 정점 바이트)은 참조만 모으고 오프셋은 크기로
+      # 계산합니다. 복사가 없으므로 550개 정의에 사실상 공짜입니다.
+      # 실제로 이어붙이는 것은 보낼 것이 정해진 뒤 한 번뿐입니다.
+      class BlobPlan
+        attr_reader :segments, :bytesize
+        def initialize
+          @segments = []
+          @bytesize = 0
+        end
+
+        def push(str, count)
+          return nil if str.nil? || count.nil? || count.zero?
+          off = @bytesize
+          @segments << str
+          @bytesize += str.bytesize
+          { 'off' => off, 'count' => count }
+        end
+
+        # Array#join 은 C 구현이고 전체 크기를 먼저 계산해 **한 번만**
+        # 할당합니다. << 를 반복하면 재할당이 여러 번 일어납니다.
+        def join
+          @segments.empty? ? +''.b : @segments.join.b
+        end
+      end
+
+      # skip_geom: { 정의id => 판 }. 판이 같으면 **지오메트리를 싣지 않습니다.**
+      # 렌더러가 이미 갖고 있다는 뜻입니다.
+      def split_binary(scene, skip_geom = nil)
+        blob = BlobPlan.new
         man  = {}
 
         scene.each do |k, v|
           man[k] = if k == 'definitions'
-                     v.each_with_object({}) { |(dk, d), h| h[dk] = strip_def(d, blob) }
+                     v.each_with_object({}) { |(dk, d), h| h[dk] = strip_def(d, blob, skip_geom) }
                    elsif k == 'root'
+                     # 루트는 캐시하지 않으므로 판이 없습니다. 항상 싣습니다.
                      { 'meshes' => v['meshes'].map { |mb| strip_mesh(mb, blob) },
                        'children' => v['children'] }
                    else
@@ -413,10 +452,24 @@ module IRIS
         [man, blob]
       end
 
-      def strip_def(d, blob)
+      def strip_def(d, blob, skip_geom = nil)
         out = d.dup
-        out['meshes'] = (d['meshes'] || []).map { |mb| strip_mesh(mb, blob) }
+        gen = d['gen']
+        if skip_geom && gen && gen > 0 && skip_geom[d['id']] == gen
+          # 이 정의의 지오메트리는 렌더러가 이미 갖고 있습니다.
+          # 배치·이름·조명은 그대로 싣습니다 — 그건 매번 바뀔 수 있습니다.
+          out['meshes'] = []
+          out['geom']   = 'same'
+          @geom_skipped = @geom_skipped.to_i + 1
+        else
+          out['meshes'] = (d['meshes'] || []).map { |mb| strip_mesh(mb, blob) }
+          @geom_sent = @geom_sent.to_i + 1 unless out['meshes'].empty?
+        end
         out
+      end
+
+      def geom_counts
+        { sent: @geom_sent.to_i, skipped: @geom_skipped.to_i }
       end
 
       # 배열을 블롭으로 옮기고 {off, count} 참조만 남긴다.
@@ -492,29 +545,46 @@ module IRIS
       #   블롭  — 정점·인덱스. 바뀐 정의만 보내면 사라집니다
       #   JSON  — 배치 트리는 매번 필요합니다. 델타로도 남습니다
       #   조립  — 헤더 + 이어붙이기
-      def pack_binary(scene)
+      # 보낼 것을 계획합니다. 이어붙이지는 않습니다.
+      #
+      # 반환: { head:, json:, segments:, bytes:, sizes:, sent_gen: }
+      #   sent_gen — 이번에 지오메트리를 실은 정의의 판. 호스트가 기억해 두면
+      #              다음 번에 건너뛸 수 있습니다.
+      def plan_binary(scene, skip_geom: nil)
         t0 = Time.now
-        man, blob = split_binary(scene)
+        @geom_sent = 0
+        @geom_skipped = 0
+        man, blob = split_binary(scene, skip_geom)
         t1 = Time.now
         json = JSON.generate(man).b
-        pad  = (8 - (json.bytesize % 8)) % 8
-        json << (' '.b * pad)
+        json << (' '.b * ((8 - (json.bytesize % 8)) % 8))
         t2 = Time.now
 
-        out = +''.b
-        out << MAGIC
-        out << [FMT_VER, 0].pack('VV')
-        out << [json.bytesize, blob.bytesize].pack('Q<Q<')
-        out << json
-        out << blob
-        t3 = Time.now
+        head = +''.b
+        head << MAGIC
+        head << [FMT_VER, 0].pack('VV')
+        head << [json.bytesize, blob.bytesize].pack('Q<Q<')
 
-        @pack_phase = {
-          blob_ms: (t1 - t0) * 1000.0,
-          json_ms: (t2 - t1) * 1000.0,
-          join_ms: (t3 - t2) * 1000.0,
-        }
-        [out, { json: json.bytesize, bin: blob.bytesize }]
+        sent = {}
+        (scene['definitions'] || {}).each do |id, d|
+          g = d['gen']
+          sent[id] = g if g && g > 0
+        end
+
+        @pack_phase = { blob_ms: (t1 - t0) * 1000.0, json_ms: (t2 - t1) * 1000.0, join_ms: 0.0 }
+        { head: head, json: json, plan: blob,
+          bytes: head.bytesize + json.bytesize + blob.bytesize,
+          sizes: { json: json.bytesize, bin: blob.bytesize },
+          sent_gen: sent }
+      end
+
+      def pack_binary(scene, skip_geom: nil)
+        pl = plan_binary(scene, skip_geom: skip_geom)
+        t0 = Time.now
+        out = +''.b
+        out << pl[:head] << pl[:json] << pl[:plan].join
+        @pack_phase[:join_ms] = (Time.now - t0) * 1000.0
+        [out, pl[:sizes]]
       end
 
       def pack_phase
@@ -838,6 +908,7 @@ module IRIS
             @stats['kids_rescanned'] = (@stats['kids_rescanned'] || 0) + 1
           end
           meshes = hit[:meshes]
+          gen    = hit[:gen]
           # 캐시된 메시가 참조하는 머티리얼 레코드를 이번 실행의 목록에 되살린다.
           hit[:mats].each { |mid, rec| @materials[mid] ||= rec }
           @stats['vertices']  += hit[:verts]
@@ -861,12 +932,17 @@ module IRIS
             @cache.store(defn, meshes, mats,
                          local[:verts], local[:tris], local[:faces],
                          { normals: @seen[:normals], uvs: @seen[:uvs] }, kids)
+            gen = @cache.fetch(defn)&.fetch(:gen, nil)
           end
+          # 캐시가 없으면 판을 매길 수 없습니다 — 매번 새 값이어야 하므로
+          # 델타가 성립하지 않고, 그때는 항상 전체를 보냅니다.
+          gen ||= (@nocache_gen = @nocache_gen.to_i + 1) * -1
           @stats['defs_extracted'] += 1
         end
 
         @definitions[key]['meshes']        = meshes
         @definitions[key]['children']      = children
+        @definitions[key]['gen']           = gen
         @definitions[key]['persistent_id'] = safe_pid(defn)
         @definitions[key]['is_group']      = (defn.group? rescue false)
         @stats['definitions'] += 1
