@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 20:34:04 +0900
+Subject: [PATCH 12/12] =?UTF-8?q?iris:=20=EA=B1=B0=EC=9A=B8=20=EB=B0=B0?=
+ =?UTF-8?q?=EC=B9=98=20=EB=85=B8=EB=93=9C=20=EC=88=98=20=EB=A1=9C=EA=B7=B8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 478b770..4f186a6 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -256,6 +256,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+           (unsigned long long)stats.triangles);
+     Trace("조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu",
+           stats.pointLights, stats.spotLights, stats.lightLumens, stats.emissiveMaterials);
++    Trace("거울 배치 노드 %zu개", stats.mirroredNodes);
+     if (stats.meshesReused)
+         Trace("델타 — 메시 재사용 %zu (정점 업로드·BLAS 재구축 없음)", stats.meshesReused);
+     for (const auto& w : stats.warnings)
