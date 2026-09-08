@@ -485,12 +485,10 @@ module IRIS
         }
       end
 
-      # 이미 인코딩된 조각을 블롭에 이어붙이고 {off, count} 만 남긴다.
+      # 이미 인코딩된 조각을 계획에 등록하고 {off, count} 만 남긴다.
+      # 여기서 복사는 일어나지 않습니다 — 참조만 모읍니다.
       def push_bin(blob, str, count)
-        return nil if str.nil? || count.nil? || count.zero?
-        off = blob.bytesize
-        blob << str
-        { 'off' => off, 'count' => count }
+        blob.push(str, count)
       end
 
       # 씬 전체를 JSON 이 담을 수 있는 모양으로. 느린 경로 전용입니다.
