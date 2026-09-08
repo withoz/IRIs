@@ -446,11 +446,19 @@ module IRIS
       # 그대로 파이프로 보냅니다 — 파일을 거치지 않습니다.
       #
       # 반환: [바이트 문자열(BINARY), { json:, bin: }]
+      # 직렬화가 왕복의 85~90%가 됐습니다(추출을 19.7 ms 로 줄인 뒤).
+      # 델타가 없앨 수 있는 부분과 남는 부분이 다르므로 나눠 잽니다.
+      #   블롭  — 정점·인덱스. 바뀐 정의만 보내면 사라집니다
+      #   JSON  — 배치 트리는 매번 필요합니다. 델타로도 남습니다
+      #   조립  — 헤더 + 이어붙이기
       def pack_binary(scene)
+        t0 = Time.now
         man, blob = split_binary(scene)
+        t1 = Time.now
         json = JSON.generate(man).b
         pad  = (8 - (json.bytesize % 8)) % 8
         json << (' '.b * pad)
+        t2 = Time.now
 
         out = +''.b
         out << MAGIC
@@ -458,7 +466,18 @@ module IRIS
         out << [json.bytesize, blob.bytesize].pack('Q<Q<')
         out << json
         out << blob
+        t3 = Time.now
+
+        @pack_phase = {
+          blob_ms: (t1 - t0) * 1000.0,
+          json_ms: (t2 - t1) * 1000.0,
+          join_ms: (t3 - t2) * 1000.0,
+        }
         [out, { json: json.bytesize, bin: blob.bytesize }]
+      end
+
+      def pack_phase
+        @pack_phase || {}
       end
 
       def write_binary(path, scene)

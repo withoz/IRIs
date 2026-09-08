@@ -116,6 +116,11 @@ module IRIS
                    extract_ms, comma(st['triangles'].to_i), comma(st['instances'].to_i))
         say format('직렬화 %6.1f ms   %s bytes (JSON %s + 블롭 %s)',
                    pack_ms, comma(bytes.bytesize), comma(sizes[:json]), comma(sizes[:bin]))
+        pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
+        unless pp.empty?
+          say format('  └ 블롭 %.1f · JSON %.1f · 조립 %.1f ms',
+                     pp[:blob_ms].to_f, pp[:json_ms].to_f, pp[:join_ms].to_f)
+        end
         say format('전송 %8.1f ms   %.0f MB/s', send_ms,
                    bytes.bytesize / 1048576.0 / [send_ms / 1000.0, 1e-9].max)
         if @phase
@@ -150,10 +155,14 @@ module IRIS
         path = File.join(dir, 'sync_timing.csv')
         head = !File.exist?(path)
         File.open(path, 'a:UTF-8') do |f|
-          f.puts('time,extract_ms,pack_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts('time,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,triangles,instances,defs_extracted,defs_cached') if head
           ph = @phase || {}
+          pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
           f.puts([Time.now.strftime('%H:%M:%S'),
-                  format('%.1f', extract_ms), format('%.1f', pack_ms), format('%.1f', send_ms),
+                  format('%.1f', extract_ms), format('%.1f', pack_ms),
+                  format('%.1f', pp[:blob_ms].to_f), format('%.1f', pp[:json_ms].to_f),
+                  format('%.1f', pp[:join_ms].to_f),
+                  format('%.1f', send_ms),
                   format('%.1f', ph[:open].to_f),  format('%.1f', ph[:hello].to_f),
                   format('%.1f', ph[:write].to_f), format('%.1f', ph[:ack].to_f),
                   format('%.1f', ph[:bye].to_f),
