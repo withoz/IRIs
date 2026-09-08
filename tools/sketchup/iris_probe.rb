@@ -194,6 +194,19 @@ module IRIS
         @entries.clear
       end
 
+      # 전부 깨끗하다고 표시한다.
+      #
+      # 추출을 끝내고 만든 바이트가 지난번과 같다고 확인했을 때 부릅니다.
+      # 그 시점의 무효화 표시는 **증명된 거짓**입니다 — 다시 뽑아 봤는데
+      # 내용이 같았으니까요. 지우지 않으면 다음 틱에도 또 뽑게 되고,
+      # 편집이 없는데도 매초 전체 추출이 돕니다.
+      #
+      # SketchUp 은 단일 스레드이므로 추출과 이 호출 사이에 사용자 편집이
+      # 끼어들 수 없습니다.
+      def clear_dirty
+        @entries.each_value { |e| e[:dirty] = false }
+      end
+
       # 무효화된 항목만. 델타 비용 측정에 쓴다.
       def dirty_entries
         @entries.select { |_, e| e[:dirty] }

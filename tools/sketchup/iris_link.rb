@@ -78,8 +78,18 @@ module IRIS
         # 비교는 memcmp 라 36 MB 에 수 ms 입니다. 전송(47 ms)보다 훨씬 쌉니다.
         if !force && @last_bytes && @last_bytes == bytes
           @skipped = @skipped.to_i + 1
-          say format('변경 없음 — 보내지 않습니다 (추출 %.0f ms · 연속 %d회)',
-                     extract_ms, @skipped)
+
+          # 무효화 표시는 **증명된 거짓**입니다 — 다시 뽑아 봤는데 내용이
+          # 같았습니다. 지우지 않으면 다음 틱에도 또 뽑게 되어, 편집이 없는데도
+          # 매초 전체 추출이 돕니다.
+          IRIS::Probe.instance_variable_get(:@def_cache)&.clear_dirty
+
+          # 매번 찍으면 콘솔이 계속 도는 것처럼 보입니다. 처음 몇 번과
+          # 이후 가끔만 알립니다.
+          if @skipped <= 3 || (@skipped % 30).zero?
+            say format('변경 없음 — 보내지 않습니다 (추출 %.0f ms · 연속 %d회)',
+                       extract_ms, @skipped)
+          end
           return true
         end
 
@@ -192,7 +202,8 @@ module IRIS
 
         @auto_busy = true
         begin
-          say "변경 감지: 정의 #{dirty.size}개"
+          # 이 줄도 매번 찍으면 시끄럽습니다. 실제로 보낸 경우만 sync 가 알립니다.
+          say "변경 감지: 정의 #{dirty.size}개" if @skipped.to_i.zero?
           sync(pipe: @auto_pipe)
         ensure
           @auto_busy = false
