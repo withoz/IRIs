@@ -115,9 +115,14 @@ namespace iris::bridge
             // 여기서 ack 를 통째로 덮어씁니다. PipeServer 가 만들어 둔 기본
             // 응답은 사라집니다 — 실제로 그렇게 해서 델타가 켜지지 않았고,
             // 호스트는 매번 전체를 보내면서도 아무 오류를 보지 못했습니다.
+            const bool needFull = TakeFullResyncRequest();
+            if (needFull)
+                say("지난 씬에 재사용할 메시가 없었습니다 — 전체 재전송을 요청합니다");
+
             ack = "{\"protocol\":" + std::to_string(protocol::kProtocolVersion) +
                   ",\"accepted\":true,\"renderer\":\"IRIS\",\"session\":" +
-                  std::to_string(protocol::ProcessSessionId()) + "}";
+                  std::to_string(protocol::ProcessSessionId()) +
+                  ",\"need_full\":" + (needFull ? "true" : "false") + "}";
             return true;
         };
 
@@ -334,5 +339,22 @@ namespace iris::bridge
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         ++m_applied;
+    }
+}
+
+namespace iris::bridge
+{
+    void IrisBridge::RequestFullResync()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_needFullResync = true;
+    }
+
+    bool IrisBridge::TakeFullResyncRequest()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const bool v = m_needFullResync;
+        m_needFullResync = false;
+        return v;
     }
 }

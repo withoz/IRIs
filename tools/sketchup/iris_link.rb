@@ -531,6 +531,14 @@ module IRIS
           session = ack['session']
           @diag = { session: session, prev: @session,
                     sent_gen: (@sent_gen || {}).size, full: full }
+
+          # 렌더러가 "지난번에 재사용할 메시가 없었다"고 하면 우리 기억이
+          # 틀린 것입니다. 그대로 두면 그 물체가 화면에서 사라진 채 남습니다.
+          if ack['need_full']
+            say '렌더러가 전체 재전송을 요청했습니다.'
+            full = true
+          end
+
           if full || session.nil? || session != @session
             if @session && session != @session
               say '렌더러가 새로 떴습니다 — 전체를 보냅니다.'

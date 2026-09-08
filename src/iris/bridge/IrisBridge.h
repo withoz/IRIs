@@ -73,6 +73,17 @@ namespace iris::bridge
         // 단순합니다. 원격 구성이 생기면 바이트 전송을 다시 봅니다.
         [[nodiscard]] std::string TextureBase() const;
 
+        // **델타 안전망.**
+        //
+        // 호스트가 "이 정의는 안 바뀌었다"고 했는데 우리가 갖고 있지 않으면
+        // 그 물체는 화면에서 사라집니다. 오류는 나지 않으므로 아무도 모릅니다.
+        //
+        // 씬 적용은 렌더 스레드에서 나중에 일어나므로 그 자리에서 SyncAck 에
+        // 실을 수 없습니다. 대신 표시를 남겨 **다음 Hello 응답**에 실어 보내고,
+        // 호스트가 전체를 다시 보냅니다.
+        void RequestFullResync();
+        [[nodiscard]] bool TakeFullResyncRequest();
+
         // --- 텍스처 캐시 (프로세스 수명) ---
         //
         // **엔진의 TextureCache 는 씬을 로드할 때마다 비워집니다**
@@ -108,6 +119,7 @@ namespace iris::bridge
         IrisBridge& operator=(const IrisBridge&) = delete;
 
         mutable std::mutex                      m_mutex;
+        bool                                    m_needFullResync = false;
         std::vector<uint8_t>                    m_pending;
         std::string                             m_textureBase;
         std::function<void(const std::string&)> m_log;

@@ -472,7 +472,13 @@ module IRIS
       def strip_def(d, blob, skip_geom = nil)
         out = d.dup
         gen = d['gen']
-        if skip_geom && gen && gen > 0 && skip_geom[d['id']] == gen
+        # ⚠ 지오메트리가 **있는** 정의에만 표시합니다.
+        #
+        # 순수 컨테이너(이 모델의 39%)에도 붙였더니 렌더러가 캐시에서 메시를
+        # 찾다가 없어서 476번 경고했습니다. 없는 것이 정상인데 없다고 알린
+        # 것입니다 — 진짜 누락이 그 안에 묻힙니다.
+        has_geometry = !(d['meshes'] || []).empty?
+        if has_geometry && skip_geom && gen && gen > 0 && skip_geom[d['id']] == gen
           # 이 정의의 지오메트리는 렌더러가 이미 갖고 있습니다.
           # 배치·이름·조명은 그대로 싣습니다 — 그건 매번 바뀔 수 있습니다.
           out['meshes'] = []
@@ -569,10 +575,13 @@ module IRIS
         head << [FMT_VER, 0].pack('VV')
         head << [json.bytesize, blob.bytesize].pack('Q<Q<')
 
+        # 지오메트리를 가진 정의만 기억합니다 — 나머지는 보낼 것이 없습니다.
         sent = {}
         (scene['definitions'] || {}).each do |id, d|
           g = d['gen']
-          sent[id] = g if g && g > 0
+          next unless g && g > 0
+          next if (d['meshes'] || []).empty?
+          sent[id] = g
         end
 
         @pack_phase = { blob_ms: (t1 - t0) * 1000.0, json_ms: (t2 - t1) * 1000.0, join_ms: 0.0 }
