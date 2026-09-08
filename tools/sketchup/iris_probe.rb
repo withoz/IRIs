@@ -52,11 +52,12 @@ module IRIS
     #   3 — 자식 엔티티 목록(kids)·엔티티 개수(esize) 추가
     #   4 — 메시를 배열이 아니라 **미리 인코딩한 이진**으로 보관
     #   5 — 지오메트리 판(gen) 추가 — 델타의 근거
+    #   6 — 뒷면 재질 면의 UV·법선·감김 교정 (메시 내용이 바뀝니다)
     #
     # ⚠ 번호를 올리는 것을 잊어도 되도록, fetch 가 **필드 목록**도 함께
     #   봅니다(DefCache::CACHE_FIELDS). 실제로 한 번 잊었고 델타가 조용히
     #   꺼졌습니다.
-    CACHE_SCHEMA = 5
+    CACHE_SCHEMA = 6
 
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
@@ -971,8 +972,21 @@ module IRIS
       # ------------------------------------------------------------ 지오메트리
 
       # 머티리얼별로 버킷을 나눈다 = 드로우콜/BLAS 지오메트리 분리 단위.
+      # ⚠ 재질을 뒷면에서 가져왔으면 **UV 도 뒷면 것**이어야 합니다.
+      #
+      # SketchUp 의 면은 앞뒤가 각각 재질과 UV 를 따로 가집니다. 반대편에서
+      # 페인트를 칠하면 재질이 뒷면에 붙는데(아주 흔합니다), 그때 앞면 UV 로
+      # 그리면 **텍스처가 좌우로 뒤집힙니다.** 실제로 로고 글자가 거울상으로
+      # 나왔습니다.
+      #
+      # 보이는 쪽이 뒷면이므로 법선과 감김 방향도 함께 뒤집습니다. 그러지
+      # 않으면 빛을 뒤에서 받는 것으로 계산됩니다.
       def accumulate_face(face, buckets, counts = nil)
-        mat  = face.material || face.back_material
+        front = (face.material rescue nil)
+        back  = (face.back_material rescue nil)
+        use_back = front.nil? && !back.nil?
+        mat  = front || back
+        @stats['back_faces'] = (@stats['back_faces'] || 0) + 1 if use_back
         mkey = mat ? register_material(mat) : '__default__'
         buf  = (buckets[mkey] ||= { 'p' => [], 'n' => [], 'uv' => [], 'i' => [] })
 
@@ -996,12 +1010,13 @@ module IRIS
           n = (mesh.normal_at(i) rescue nil)
           if n
             @seen[:normals] = true
-            buf['n'].push(n.x.to_f, n.y.to_f, n.z.to_f)
+            sign = use_back ? -1.0 : 1.0
+            buf['n'].push(n.x.to_f * sign, n.y.to_f * sign, n.z.to_f * sign)
           else
-            buf['n'].push(0.0, 0.0, 1.0)
+            buf['n'].push(0.0, 0.0, use_back ? -1.0 : 1.0)
           end
 
-          uv = (mesh.uv_at(i, true) rescue nil)
+          uv = (mesh.uv_at(i, !use_back) rescue nil)
           if uv
             @seen[:uvs] = true
             q = (uv.z.nil? || uv.z.abs < 1e-12) ? 1.0 : uv.z
@@ -1014,7 +1029,11 @@ module IRIS
         mesh.polygons.each do |poly|
           next unless poly.length == 3
           # 인덱스는 1-based이며 부호는 에지 가시성을 뜻한다 -> abs 필수
-          buf['i'].push(base + poly[0].abs - 1, base + poly[1].abs - 1, base + poly[2].abs - 1)
+          a = base + poly[0].abs - 1
+          b = base + poly[1].abs - 1
+          c = base + poly[2].abs - 1
+          # 뒷면을 보여 주는 면은 감김도 뒤집어 기하 법선을 셰이딩 법선과 맞춥니다.
+          use_back ? buf['i'].push(a, c, b) : buf['i'].push(a, b, c)
           @stats['triangles'] += 1
           counts[:tris] += 1 if counts
         end
@@ -1303,6 +1322,8 @@ module IRIS
         w << "     법선 추출     : #{@seen[:normals] ? 'O' : 'X'}"
         w << "     UV 추출       : #{@seen[:uvs] ? 'O' : 'X'}"
         w << "     추출 실패 면  : #{@stats['face_errors']}"
+        # 뒷면에만 칠해진 면. 앞면 UV 로 그리면 텍스처가 거울상이 됩니다.
+        w << "     뒷면 재질 면  : #{@stats['back_faces']}" if @stats['back_faces'].to_i > 0
         w << ''
         w << ' [1-b] 정의 캐시'
         w << "     신규 추출     : #{@stats['defs_extracted']}"
@@ -1419,7 +1440,7 @@ module IRIS
           'definitions' => 0, 'face_errors' => 0, 'groups_skipped' => 0,
           'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
           'defs_extracted' => 0, 'defs_cached' => 0, 'lights_defs' => 0,
-          'kids_reused' => 0, 'kids_rescanned' => 0,
+          'kids_reused' => 0, 'kids_rescanned' => 0, 'back_faces' => 0,
         }
         @definitions    = {}
         @materials      = {}
