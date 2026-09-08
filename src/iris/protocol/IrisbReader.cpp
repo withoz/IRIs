@@ -420,8 +420,10 @@ namespace iris::protocol
         {
             View v;
             v.name        = GetString(vv, "name");
-            v.fovDeg      = static_cast<float>(GetDouble(vv, "fov_deg", 60.0));
-            v.perspective = GetBool(vv, "perspective", true);
+            v.fovDeg         = static_cast<float>(GetDouble(vv, "fov_deg", 60.0));
+            v.fovIsHeight    = GetBool(vv, "fov_is_height", true);
+            v.viewportAspect = static_cast<float>(GetDouble(vv, "viewport_aspect"));
+            v.perspective    = GetBool(vv, "perspective", true);
             v.aspect      = static_cast<float>(GetDouble(vv, "aspect"));
             ReadVec(vv["eye"], v.eye);
             ReadVec(vv["target"], v.target);

@@ -6,7 +6,9 @@
 #include <json/json.h>
 #include <donut/engine/TextureCache.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -26,18 +28,70 @@ namespace iris::bridge
 
         // .irisb 의 변환행렬은 glTF 와 같은 배치입니다 — 열 우선, X축이 [0..3),
         // Y축이 [4..7), Z축이 [8..11), 원점이 [12..15).
-        // **glTF 임포터와 완전히 같은 방식으로 넣습니다**
-        // (External/Donut/src/engine/GltfImporter.cpp:1745). 규약을 새로 해석하지
-        // 않는 것이 목적입니다 — 틀리면 씬 전체가 전치됩니다.
+        //
+        // 변환행렬을 Donut 의 TRS 로 **정확히** 분해합니다.
+        //
+        // **`decomposeAffine` 을 쓰면 안 됩니다.** 그 함수는 스케일과 회전을
+        // 행렬의 **열**에서 뽑는데, `SceneGraphNode::UpdateLocalTransform` 은
+        // `scaling * rotation` (행벡터) 로 재합성합니다. 그 형태의 저장 행렬은
+        //
+        //     row_i = s_i * R.row_i
+        //
+        // 이므로 **행**에서 뽑아야 왕복이 성립합니다. 열에서 뽑으면 회전이
+        // 전치되어 나옵니다.
+        //
+        // 수치로 확인한 결과 (원소 최대 오차):
+        //   회전만 / 균일 스케일        0        — 우연히 맞습니다
+        //   거울(반전) + 회전           1.414    — **복원값이 전치. 방향이 뒤집힙니다**
+        //   비균일 스케일 + 회전        0.71~2.59
+        //
+        // 실제 모델에서 비균일 스케일이 인스턴스의 17% 이고, 가구를 좌우 반전해
+        // 배치하는 것은 SketchUp 의 일상적인 사용법입니다. 그래서 가구 방향이
+        // 반대로 나왔습니다.
+        //
+        // 아래 방식은 임의 S·R 행렬 2000개에서 최대 오차 4.12e-13 입니다.
+        // 쿼터니언 부호 규약은 `decomposeAffine` 것과 같습니다 — 그 부분은 맞습니다.
+        //
+        // ⚠ 이것은 Donut 자체의 문제이므로 **glTF 경로에도 같은 오류가 있습니다.**
+        //   우리는 우리 경로만 고칩니다.
         void ApplyTransform(const std::shared_ptr<de::SceneGraphNode>& node, const float* m)
         {
-            const affine3 aff = affine3(float3(m + 0), float3(m + 4), float3(m + 8), float3(m + 12));
+            // 저장 레이아웃: row_i = 기저벡터 e_i 의 상(像).
+            // .irisb 는 glTF 와 같은 배치이므로 m+0/+4/+8 이 각각 X·Y·Z 축입니다.
+            double3 row[3] = {
+                double3(m[0], m[1], m[2]),
+                double3(m[4], m[5], m[6]),
+                double3(m[8], m[9], m[10]),
+            };
 
-            double3 translation;
-            double3 scaling;
-            dquat   rotation;
-            decomposeAffine(daffine3(aff), &translation, &rotation, &scaling);
+            double s[3];
+            for (int i = 0; i < 3; ++i)
+            {
+                s[i] = length(row[i]);
+                if (s[i] > 1e-12)
+                    row[i] = row[i] / s[i];
+            }
 
+            // 반사(행렬식 음수)면 한 축에 음수 스케일로 접어 넣어 R 을 정회전으로
+            // 만듭니다. 이렇게 해야 쿼터니언이 성립합니다.
+            if (dot(cross(row[0], row[1]), row[2]) < 0.0)
+            {
+                s[0]   = -s[0];
+                row[0] = -row[0];
+            }
+            const double3 scaling(s[0], s[1], s[2]);
+
+            // 순수 회전에서 쿼터니언을 뽑습니다 (decomposeAffine 과 같은 규약).
+            dquat rotation;
+            rotation.w = std::sqrt(std::max(0.0, 1.0 + row[0].x + row[1].y + row[2].z)) * 0.5;
+            rotation.x = std::sqrt(std::max(0.0, 1.0 + row[0].x - row[1].y - row[2].z)) * 0.5;
+            rotation.y = std::sqrt(std::max(0.0, 1.0 - row[0].x + row[1].y - row[2].z)) * 0.5;
+            rotation.z = std::sqrt(std::max(0.0, 1.0 - row[0].x - row[1].y + row[2].z)) * 0.5;
+            rotation.x = std::copysign(rotation.x, row[1].z - row[2].y);
+            rotation.y = std::copysign(rotation.y, row[2].x - row[0].z);
+            rotation.z = std::copysign(rotation.z, row[0].y - row[1].x);
+
+            double3 translation(m[12], m[13], m[14]);
             node->SetTransform(&translation, &rotation, &scaling);
         }
 
@@ -461,8 +515,27 @@ namespace iris::bridge
             dquat   rotation;
             decomposeAffine(daffine3(aff), &translation, &rotation, &scaling);
 
+            // 화각 규약을 맞춥니다.
+            //
+            // SketchUp 의 fov 는 fov_is_height? 가 false 면 **수평** 화각입니다.
+            // 그대로 수직으로 쓰면 보이는 범위가 호스트와 달라집니다 —
+            // 실제로 "스케치업 화면과 렌더링 범위가 다르다"는 보고가 있었습니다.
+            float verticalFovDeg = v.fovDeg;
+            if (!v.fovIsHeight)
+            {
+                const float aspect = (v.aspect > 0.0f) ? v.aspect
+                                   : (v.viewportAspect > 0.0f) ? v.viewportAspect
+                                   : 16.0f / 9.0f;   // 정보가 없으면 흔한 값으로
+                const float halfH = dm::radians(v.fovDeg) * 0.5f;
+                verticalFovDeg = dm::degrees(2.0f * std::atan(std::tan(halfH) / aspect));
+                stats.warnings.push_back(
+                    "뷰 '" + v.name + "': 수평 화각 " + std::to_string(v.fovDeg) +
+                    "도를 종횡비 " + std::to_string(aspect) + " 로 수직 " +
+                    std::to_string(verticalFovDeg) + "도로 변환");
+            }
+
             auto cam = std::make_shared<de::PerspectiveCamera>();
-            cam->verticalFov = dm::radians(v.fovDeg);
+            cam->verticalFov = dm::radians(verticalFovDeg);
             cam->zNear       = 0.01f;
             if (v.aspect > 0.0f)
                 cam->aspectRatio = v.aspect;

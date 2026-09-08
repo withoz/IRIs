@@ -96,6 +96,13 @@ namespace iris::protocol
         std::array<float, 3> target{};
         std::array<float, 3> up{};
         float                fovDeg      = 60.0f;
+
+        // ⚠ SketchUp 의 fov 는 수직일 수도 수평일 수도 있습니다.
+        // false 면 **수평 화각**이며, 수직으로 바꾸려면 종횡비가 필요합니다.
+        // 이 구분을 빠뜨리면 보이는 범위가 호스트와 달라집니다.
+        bool                 fovIsHeight = true;
+        float                viewportAspect = 0.0f;   // 호스트 뷰포트의 가로/세로
+
         bool                 perspective = true;
         float                aspect      = 0.0f;
         float                height      = 0.0f;   // 평행 투영일 때만 의미 있음

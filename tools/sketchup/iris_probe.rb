@@ -865,9 +865,19 @@ module IRIS
           'eye'         => point_m(cam.eye),
           'target'      => point_m(cam.target),
           'up'          => [cam.up.x.to_f, cam.up.y.to_f, cam.up.z.to_f],
-          # SketchUp fov 는 화면이 세로로 길면 수평 화각을 준다. 렌더러 쪽에서
-          # 종횡비를 알 수 없으므로 그대로 넘기고 해석은 소비자에게 맡긴다.
-          'fov_deg'     => (cam.fov rescue nil),
+          # ⚠ SketchUp 의 fov 는 **수직일 수도 수평일 수도** 있습니다.
+          # fov_is_height? 가 false 면 수평 화각입니다. 이 값을 함께 보내지 않으면
+          # 렌더러가 수직으로 단정해 **보이는 범위가 달라집니다.**
+          'fov_deg'       => (cam.fov rescue nil),
+          'fov_is_height' => (cam.fov_is_height? rescue true),
+          # 수평 화각을 수직으로 바꾸려면 종횡비가 필요합니다. cam.aspect_ratio 는
+          # "창에 맞춤"이면 0 을 주므로 실제 뷰포트 비율을 함께 넘깁니다.
+          'viewport_aspect' => (begin
+            v = Sketchup.active_model.active_view
+            v.vpheight.to_f > 0 ? (v.vpwidth.to_f / v.vpheight.to_f) : 0.0
+          rescue StandardError
+            0.0
+          end),
           'perspective' => (cam.perspective? rescue true),
           'aspect'      => (cam.aspect_ratio rescue 0.0),
           'height'      => (cam.perspective? ? nil : (cam.height * INCH_TO_M rescue nil)),
