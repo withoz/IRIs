@@ -13,7 +13,7 @@
   왕복 확인이 목적이므로 페이로드는 버립니다.
 
 .PARAMETER Name
-  파이프 이름. 기본 iris-test  (실제 경로는 \.\pipe\iris-test)
+  파이프 이름. 기본 iris-test  (실제 경로는 \\.\pipe\iris-test)
 
 .PARAMETER Once
   한 번 받고 종료. 기본은 계속 대기.
@@ -28,16 +28,27 @@ $ErrorActionPreference = 'Stop'
 $MAGIC = [Text.Encoding]::ASCII.GetBytes('IRISPIPE')
 
 Write-Host ''
-Write-Host "명명 파이프 수신 대기: \.\pipe\$Name" -ForegroundColor Cyan
+Write-Host "명명 파이프 수신 대기: \\.\pipe\$Name" -ForegroundColor Cyan
 Write-Host '  Ctrl+C 로 종료합니다.'
 Write-Host ''
 
 while ($true) {
-    $server = New-Object IO.Pipes.NamedPipeServerStream(
-        $Name, [IO.Pipes.PipeDirection]::InOut, 1,
-        [IO.Pipes.PipeTransmissionMode]::Byte,
-        [IO.Pipes.PipeOptions]::None,
-        1MB, 1MB)
+    # 인스턴스를 4개 둡니다. 1개로 두면 낡은 인스턴스 하나가 이름을 잡은 채
+    # 남았을 때 새 서버 생성도, 클라이언트 연결도 전부 '액세스 거부'가 됩니다.
+    try {
+        $server = New-Object IO.Pipes.NamedPipeServerStream(
+            $Name, [IO.Pipes.PipeDirection]::InOut, 4,
+            [IO.Pipes.PipeTransmissionMode]::Byte,
+            [IO.Pipes.PipeOptions]::None,
+            1MB, 1MB)
+    }
+    catch {
+        Write-Host ''
+        Write-Host "파이프 '$Name' 을 만들 수 없습니다: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host '  같은 이름의 서버가 이미 떠 있을 수 있습니다.'
+        Write-Host '  그 창을 닫거나, -Name 으로 다른 이름을 쓰십시오.'
+        return
+    }
     try {
         $server.WaitForConnection()
         Write-Host '연결됨.' -ForegroundColor Green

@@ -39,7 +39,7 @@ module IRIS
         @log = []
         say ''
         say "명명 파이프 전송 실측  (Ruby #{RUBY_VERSION})"
-        say "  파이프: \\.\pipe\#{name}"
+        say "  파이프: #{pipe_path(name)}"
 
         payload = build_payload(file, size)
         return write_log(out_dir) unless payload
@@ -94,8 +94,7 @@ module IRIS
       end
 
       def send_once(name, payload, chunk)
-        path = "\\.\pipe\#{name}"
-        io = open_pipe(path)
+        io = open_pipe(pipe_path(name))
         return nil unless io
 
         begin
@@ -127,6 +126,17 @@ module IRIS
         end
       end
 
+      # Windows 명명 파이프 경로:  \\.\pipe\<이름>
+      #
+      # 역슬래시를 소스에 직접 쓰지 않고 문자 코드(92)로 만듭니다.
+      # 이 파일을 처음 쓸 때 도구를 거치며 역슬래시가 절반으로 줄어
+      # "\\.\pipe\#{name}" 이 되었고, Ruby가 \#{...} 를 보간 이스케이프로
+      # 읽어 경로가 리터럴 "\.pipe#{name}" 이 되었습니다. 다시 겪지 않게 합니다.
+      def pipe_path(name)
+        b = 92.chr
+        "#{b}#{b}.#{b}pipe#{b}#{name}"
+      end
+
       def open_pipe(path)
         # 서버가 다음 연결을 준비하는 사이일 수 있으므로 몇 번 다시 시도한다.
         5.times do |i|
@@ -140,9 +150,20 @@ module IRIS
             sleep 0.2
           end
         end
-        say "  파이프를 열지 못했습니다: #{@last_err&.message}"
-        say '  수신 서버가 떠 있는지 확인하십시오:'
-        say '    E:\IRIS\tools\setup\pipe_echo_server.ps1'
+        say "  파이프를 열지 못했습니다: #{@last_err.class} — #{@last_err&.message}"
+        case @last_err
+        when Errno::ENOENT
+          say '  → 파이프가 없습니다. 수신 서버가 떠 있지 않습니다.'
+          say '    PowerShell 에서:  E:\IRIS\tools\setup\pipe_echo_server.ps1'
+        when Errno::EACCES
+          say '  → 파이프는 있는데 접근이 거부됐습니다.'
+          say '    낡은 서버 인스턴스가 이름을 잡고 있을 때 이렇게 됩니다.'
+          say '    서버 창을 닫고 다시 띄우십시오. 그래도 안 되면 -Name 으로'
+          say '    다른 이름을 쓰고 IRIS::PipeTest.run(name: "그이름") 으로 부르십시오.'
+        else
+          say '  → 수신 서버 상태를 확인하십시오.'
+          say '    E:\IRIS\tools\setup\pipe_echo_server.ps1'
+        end
         nil
       end
 
