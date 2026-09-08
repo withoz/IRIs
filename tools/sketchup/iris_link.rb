@@ -37,11 +37,13 @@ module IRIS
     MSG_SYNC_END   = 5
     MSG_SYNC_ACK   = 6
     MSG_BYE        = 7
+    MSG_CAMERA     = 8
 
     MSG_NAMES = {
       MSG_HELLO => 'Hello', MSG_HELLO_ACK => 'HelloAck',
       MSG_SYNC_BEGIN => 'SyncBegin', MSG_SCENE_BLOB => 'SceneBlob',
-      MSG_SYNC_END => 'SyncEnd', MSG_SYNC_ACK => 'SyncAck', MSG_BYE => 'Bye'
+      MSG_SYNC_END => 'SyncEnd', MSG_SYNC_ACK => 'SyncAck', MSG_BYE => 'Bye',
+      MSG_CAMERA => 'Camera'
     }.freeze
 
     class << self
@@ -174,7 +176,7 @@ module IRIS
       def status
         say ''
         say "자동 동기화: #{auto? ? '켜짐' : '꺼짐'}"
-        say "보낸 횟수: #{@sent_count.to_i}"
+        say "보낸 횟수: 씬 #{@sent_count.to_i} · 카메라 #{@cam_sent.to_i}"
         say "마지막 오류: #{@last_error || '없음'}"
         if defined?(IRIS::Probe)
           cache = IRIS::Probe.instance_variable_get(:@def_cache)
@@ -193,6 +195,10 @@ module IRIS
 
       def tick
         return if @auto_busy
+
+        # 1) 카메라부터. 시점을 돌리는 것이 편집보다 훨씬 잦고, 씬을 다시
+        #    보낼 필요가 없으므로 수백 바이트로 끝납니다.
+        send_camera_if_moved
 
         cache = IRIS::Probe.instance_variable_get(:@def_cache)
         return unless cache
@@ -214,6 +220,66 @@ module IRIS
       #
       # 역슬래시를 소스에 직접 쓰지 않고 문자 코드(92)로 만듭니다.
       # 편집 도구를 거치며 개수가 어긋나 실제로 한 번 깨진 적이 있습니다.
+      # 뷰포트 카메라가 움직였으면 보냅니다.
+      #
+      # **씬은 건드리지 않습니다.** 시점을 돌릴 때마다 36 MB 를 다시 보내면
+      # 렌더러가 BLAS 를 다시 짓고 누적을 초기화해 화면이 수렴하지 못합니다.
+      # 05번 3절이 말한 "작고 잦은 제어" 가 이것입니다.
+      def send_camera_if_moved(pipe: nil)
+        model = Sketchup.active_model
+        return unless model
+        view = model.active_view
+        cam  = view.camera
+
+        sig = [cam.eye.to_a, cam.target.to_a, cam.up.to_a,
+               cam.fov, cam.fov_is_height?, view.vpwidth, view.vpheight].flatten
+        return if @last_cam_sig == sig
+        @last_cam_sig = sig
+
+        aspect = view.vpheight.to_f > 0 ? (view.vpwidth.to_f / view.vpheight.to_f) : 0.0
+        payload = {
+          'eye'           => point_m(cam.eye),
+          'target'        => point_m(cam.target),
+          'up'            => [cam.up.x.to_f, cam.up.y.to_f, cam.up.z.to_f],
+          'fov_deg'       => cam.fov.to_f,
+          'fov_is_height' => (cam.fov_is_height? rescue true),
+          'aspect'        => aspect,
+        }
+
+        io = open_pipe(pipe_path(pipe || @auto_pipe || 'iris'))
+        return unless io
+        begin
+          send_frame(io, MSG_HELLO, JSON.generate(hello_payload).b)
+          type, _f, _body = recv_frame(io)
+          return unless type == MSG_HELLO_ACK
+          send_frame(io, MSG_CAMERA, JSON.generate(payload).b)
+          send_frame(io, MSG_BYE, ''.b)
+          @cam_sent = @cam_sent.to_i + 1
+        rescue StandardError => e
+          @last_error = e.message
+        ensure
+          io.close rescue nil
+        end
+        true
+      end
+
+      def point_m(p)
+        m = 0.0254
+        [(p.x * m).to_f, (p.y * m).to_f, (p.z * m).to_f]
+      end
+
+      def hello_payload
+        {
+          'protocol'     => PROTOCOL_VERSION,
+          'app'          => "SketchUp #{Sketchup.version}",
+          'model'        => Sketchup.active_model.title.to_s,
+          'unit'         => 'meter',
+          'up_axis'      => 'z',
+          'generated'    => Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+          'texture_base' => IRIS::Probe.default_out_dir,
+        }
+      end
+
       def pipe_path(name)
         b = 92.chr
         "#{b}#{b}.#{b}pipe#{b}#{name}"
@@ -225,20 +291,10 @@ module IRIS
 
         begin
           # --- Hello ---
-          hello = {
-            'protocol'     => PROTOCOL_VERSION,
-            'app'          => "SketchUp #{Sketchup.version}",
-            'model'        => Sketchup.active_model.title.to_s,
-            'unit'         => 'meter',
-            'up_axis'      => 'z',
-            # 생성 시각은 **연결 단위 정보**입니다. 씬 페이로드에 넣으면 편집이
-            # 없어도 바이트가 매번 달라져 변경 감지가 무너집니다.
-            'generated'    => Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            # 텍스처는 파일로 두고 경로만 알려줍니다. 라이브 씬은 파일로
-            # 존재하지 않아 렌더러가 "씬 파일 옆"을 기준으로 쓸 수 없습니다.
-            'texture_base' => IRIS::Probe.default_out_dir,
-          }
-          send_frame(io, MSG_HELLO, JSON.generate(hello).b)
+          # 생성 시각과 텍스처 기준 경로는 **연결 단위 정보**입니다.
+          # 씬 페이로드에 넣으면 편집이 없어도 바이트가 매번 달라져 변경
+          # 감지가 무너집니다.
+          send_frame(io, MSG_HELLO, JSON.generate(hello_payload).b)
 
           type, _flags, payload = recv_frame(io)
           return fail_with("Hello 응답이 없습니다") unless type

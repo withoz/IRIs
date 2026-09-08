@@ -47,6 +47,13 @@ namespace iris::protocol
 
         // --- 양방향 ---
         Bye       = 7,   // 페이로드 없음
+
+        // 카메라만 갱신합니다. JSON { eye, target, up, fov_deg, fov_is_height, aspect }
+        //
+        // 시점을 돌릴 때마다 36 MB 씬을 다시 보낼 수는 없습니다. 05번 3절이
+        // 말한 "작고 잦은 제어" 가 이것입니다 — 수백 바이트짜리 프레임이고
+        // 씬을 다시 세우지 않으므로 렌더러가 즉시 따라옵니다.
+        Camera    = 8,
     };
 
     // SceneBlob 의 flags.
@@ -107,6 +114,7 @@ namespace iris::protocol
         case MsgType::SyncEnd:   return "SyncEnd";
         case MsgType::SyncAck:   return "SyncAck";
         case MsgType::Bye:       return "Bye";
+        case MsgType::Camera:    return "Camera";
         default:                 return "(unknown)";
         }
     }

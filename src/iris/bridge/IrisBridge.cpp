@@ -163,6 +163,42 @@ namespace iris::bridge
             return true;
         };
 
+        cb.onCamera = [this, say](const std::string& json) {
+            Json::Value  doc;
+            Json::CharReaderBuilder builder;
+            std::string  err;
+            std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+            if (!reader->parse(json.data(), json.data() + json.size(), &doc, &err) || !doc.isObject())
+            {
+                say("카메라 JSON 파싱 실패: " + err);
+                return;
+            }
+
+            auto vec3 = [&doc](const char* key, float* out) {
+                const Json::Value& a = doc[key];
+                if (!a.isArray() || a.size() != 3)
+                    return false;
+                for (int i = 0; i < 3; ++i)
+                    out[i] = static_cast<float>(a[i].asDouble());
+                return true;
+            };
+
+            CameraState c;
+            if (!vec3("eye", c.eye) || !vec3("target", c.target))
+            {
+                say("카메라 메시지에 eye/target 이 없습니다");
+                return;
+            }
+            vec3("up", c.up);
+            if (doc["fov_deg"].isNumeric())       c.fovDeg      = static_cast<float>(doc["fov_deg"].asDouble());
+            if (doc["fov_is_height"].isBool())    c.fovIsHeight = doc["fov_is_height"].asBool();
+            if (doc["aspect"].isNumeric())        c.aspect      = static_cast<float>(doc["aspect"].asDouble());
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_camera    = c;
+            m_hasCamera = true;
+        };
+
         protocol::PipeServerConfig cfg;
         cfg.name = pipeName;
 
@@ -200,6 +236,19 @@ namespace iris::bridge
         std::vector<uint8_t> out = std::move(m_pending);
         m_pending.clear();
         return out;
+    }
+
+    bool IrisBridge::HasPendingCamera() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_hasCamera;
+    }
+
+    IrisBridge::CameraState IrisBridge::TakePendingCamera()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_hasCamera = false;
+        return m_camera;
     }
 
     protocol::PipeServerStats IrisBridge::Stats() const

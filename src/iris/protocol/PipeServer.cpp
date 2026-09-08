@@ -425,6 +425,23 @@ namespace iris::protocol
                 break;
             }
 
+            case MsgType::Camera:
+            {
+                if (!sawHello)
+                {
+                    SetError("Hello 없이 Camera 가 왔습니다");
+                    return false;
+                }
+                if (cb.onCamera)
+                    cb.onCamera(std::string(reinterpret_cast<const char*>(payload.data()),
+                                            payload.size()));
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    ++stats.camerasIn;
+                }
+                break;
+            }
+
             case MsgType::Bye:
                 Log("Bye");
                 return true;

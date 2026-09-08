@@ -53,6 +53,9 @@ namespace iris::protocol
         // 동기화 한 건이 끝났을 때(SyncEnd). 처리 시간을 돌려주면 SyncAck 에 실립니다.
         std::function<void(uint64_t seq)> onSyncEnd;
 
+        // 카메라만 바뀌었을 때. 씬은 건드리지 않습니다.
+        std::function<void(const std::string& cameraJson)> onCamera;
+
         // 진단. 없으면 조용합니다.
         std::function<void(const std::string&)> onLog;
     };
@@ -63,6 +66,7 @@ namespace iris::protocol
         uint64_t framesIn    = 0;
         uint64_t bytesIn     = 0;
         uint64_t scenesIn    = 0;
+        uint64_t camerasIn   = 0;
         uint64_t errors      = 0;
     };
 

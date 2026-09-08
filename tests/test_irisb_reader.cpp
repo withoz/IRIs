@@ -50,19 +50,16 @@ namespace
                     what.c_str(), (long long)actual, (long long)expected);
     }
 
-    // 골프존 실내 모델의 기대값. Python 으로 따로 센 값입니다.
-    struct Expected
-    {
-        size_t   definitions = 706;
-        size_t   materials   = 99;
-        size_t   views       = 4;
-        size_t   buckets     = 555;
-        size_t   bucketsNoMaterial = 55;
-        size_t   childNodes  = 1155;
-        uint64_t triangles   = 400062;
-        uint64_t vertices    = 956942;
-        size_t   blobBytes   = 35422888;
-    };
+    // ⚠ 모델 판본에 기대값을 박지 않습니다.
+    //
+    // 처음에는 골프존 모델의 수치를 상수로 박아 두었습니다. 그런데 라이브
+    // 링크를 붙이고 나니 그 파일이 **사용자가 편집할 때마다 갱신**됩니다.
+    // 그러면 시험이 리더가 아니라 모델의 판본을 검사하게 되어 멀쩡한 코드에
+    // 헛경보를 냅니다 — 실제로 8건이 그렇게 실패했습니다.
+    //
+    // 대신 **Ruby 프로브가 센 값과 C++ 리더가 다시 센 값**을 대조합니다.
+    // 서로 다른 구현이 같은 답을 내는지 보는 것이므로 교차 검증이 됩니다.
+    // 절대 수치는 정보로만 찍습니다.
 
     void TestErrorPaths(const std::vector<uint8_t>& good)
     {
@@ -158,22 +155,29 @@ int main(int argc, char** argv)
         tally(d);
     tally(scene.root);
 
-    const Expected e;
-    std::printf("\n구조\n");
-    CheckEq<long long>(scene.definitions.size(), (long long)e.definitions, "정의");
-    CheckEq<long long>(scene.materials.size(),   (long long)e.materials,   "머티리얼");
-    CheckEq<long long>(scene.views.size(),       (long long)e.views,       "뷰");
-    CheckEq<long long>(buckets,                  (long long)e.buckets,     "메시 버킷");
-    CheckEq<long long>(noMat,          (long long)e.bucketsNoMaterial,     "  재질 없는 버킷");
-    CheckEq<long long>(childNodes,               (long long)e.childNodes,  "인스턴스 노드");
-    CheckEq<long long>(tris,                     (long long)e.triangles,   "삼각형");
-    CheckEq<long long>(verts,                    (long long)e.vertices,    "정점");
-    CheckEq<long long>(scene.blob.size(),        (long long)e.blobBytes,   "블롭 바이트");
+    std::printf("\n구조 (정보)\n");
+    std::printf("  정의 %zu · 머티리얼 %zu · 뷰 %zu · 버킷 %zu(재질없음 %zu)\n",
+                scene.definitions.size(), scene.materials.size(), scene.views.size(),
+                buckets, noMat);
+    std::printf("  인스턴스 노드 %zu · 삼각형 %llu · 정점 %llu · 블롭 %zu bytes\n",
+                childNodes, (unsigned long long)tris, (unsigned long long)verts,
+                scene.blob.size());
 
-    std::printf("\n매니페스트 stats 와의 일치\n");
+    // --- 진짜 시험: Ruby 프로브의 집계 대 C++ 리더의 재집계 ---
+    std::printf("\n교차 검증 (Ruby 프로브 집계 대 C++ 재집계)\n");
     CheckEq<long long>(tris,  (long long)scene.stats.triangles,   "삼각형 = stats.triangles");
     CheckEq<long long>(verts, (long long)scene.stats.vertices,    "정점 = stats.vertices");
     CheckEq<long long>(childNodes, (long long)scene.stats.instances, "인스턴스 = stats.instances");
+    CheckEq<long long>((long long)scene.definitions.size(),
+                       (long long)scene.stats.definitions, "정의 = stats.definitions");
+
+    std::printf("\n불변 조건\n");
+    Check(!scene.definitions.empty(), "정의가 하나 이상 있다");
+    Check(buckets > 0,                "메시 버킷이 하나 이상 있다");
+    Check(!scene.blob.empty(),        "블롭이 비어 있지 않다");
+    Check(scene.format == "iris.sketchup.scene", "format 이 iris.sketchup.scene 이다");
+    Check(scene.unit == "meter",      "단위가 meter 다");
+    Check(scene.upAxis == "z",        "up_axis 가 z 다");
 
     std::printf("\n속성\n");
     std::printf("  법선 있는 버킷 %zu / %zu, UV 있는 버킷 %zu / %zu\n",

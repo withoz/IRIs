@@ -49,6 +49,22 @@ namespace iris::bridge
         [[nodiscard]] bool                 HasPendingScene() const;
         [[nodiscard]] std::vector<uint8_t> TakePendingScene();
 
+        // 호스트 뷰포트 카메라. 시점을 돌릴 때마다 36 MB 씬을 다시 보낼 수는
+        // 없으므로 작은 전용 메시지로 받습니다(Wire.h MsgType::Camera).
+        // 좌표는 호스트 공간(Z-up, 미터)이며 변환은 소비자가 합니다.
+        struct CameraState
+        {
+            float eye[3]{};
+            float target[3]{};
+            float up[3]{ 0.0f, 0.0f, 1.0f };
+            float fovDeg      = 60.0f;
+            bool  fovIsHeight = true;
+            float aspect      = 0.0f;   // 호스트 뷰포트 가로/세로
+        };
+
+        [[nodiscard]] bool        HasPendingCamera() const;
+        [[nodiscard]] CameraState TakePendingCamera();
+
         // 텍스처 파일이 놓인 디렉터리. 호스트가 Hello 의 texture_base 로 알려줍니다.
         //
         // 라이브 링크에서는 씬이 파일로 존재하지 않으므로 "씬 파일 옆"이라는
@@ -110,6 +126,9 @@ namespace iris::bridge
         uint64_t                                m_lastHash = 0;
         bool                                    m_hasLastHash = false;
         uint64_t                                m_duplicates = 0;
+
+        CameraState                             m_camera;
+        bool                                    m_hasCamera = false;
 
         mutable std::mutex                      m_texMutex;
         std::unordered_map<std::string, std::shared_ptr<donut::engine::LoadedTexture>> m_textures;
