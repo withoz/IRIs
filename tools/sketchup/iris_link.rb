@@ -52,14 +52,19 @@ module IRIS
 
       # 한 번 보냅니다. 추출·직렬화·전송을 전부 합니다.
       #
-      # 캐시가 살아 있으면 바뀐 정의만 다시 추출합니다 — 실측 47배 차이입니다
-      # (docs/05-씬-델타-프로토콜.md 7절).
-      # 실패를 파일에 남깁니다.
+      # 캐시가 살아 있으면 바뀐 정의만 다시 추출하고, 렌더러가 이미 가진
+      # 지오메트리는 보내지 않습니다(docs/05-씬-델타-프로토콜.md 6절).
       #
-      # SketchUp 콘솔의 예외는 저(작업자)에게 보이지 않습니다. 매번 사용자에게
-      # 무엇이 찍혔는지 물어보는 것은 왕복 한 번을 통째로 버리는 일입니다.
-      def sync(pipe: 'iris', textures: true, force: false)
-        sync_inner(pipe: pipe, textures: textures, force: force)
+      #   force — 바뀐 게 없어도 보냅니다. **델타는 그대로 적용됩니다**
+      #   full  — 렌더러가 이미 가진 지오메트리까지 전부 다시 보냅니다
+      #
+      # 둘을 하나로 묶어 뒀다가 델타가 켜졌는지 확인할 수 없었습니다 —
+      # "다시 보낸다"와 "전부 보낸다"는 다른 뜻입니다.
+      #
+      # 예외는 out/sketchup/sync_error.txt 에 남깁니다. SketchUp 콘솔의 예외는
+      # 화면 밖의 사람에게 전달되지 않기 때문입니다.
+      def sync(pipe: 'iris', textures: true, force: false, full: false)
+        sync_inner(pipe: pipe, textures: textures, force: force, full: full)
       rescue StandardError, ScriptError => e
         log_failure(e)
         raise
@@ -79,7 +84,7 @@ module IRIS
         nil
       end
 
-      def sync_inner(pipe: 'iris', textures: true, force: false)
+      def sync_inner(pipe: 'iris', textures: true, force: false, full: false)
         model = Sketchup.active_model
         return say('활성 모델이 없습니다.') unless model
         return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
@@ -136,7 +141,7 @@ module IRIS
         @skipped = 0
 
         t_send0 = Time.now
-        ok, bytes, sizes, pack_ms = transmit(pipe, scene, force: force)
+        ok, bytes, sizes, pack_ms = transmit(pipe, scene, full: full)
         send_ms = (Time.now - t_send0) * 1000.0 - pack_ms
         @last_sig = sig if ok
         return false unless bytes
@@ -477,7 +482,7 @@ module IRIS
       # 옵니다.
       #
       # 반환: [성공?, 보낸바이트, 크기, 직렬화ms]
-      def transmit(pipe, scene, force: false)
+      def transmit(pipe, scene, full: false)
         @phase = {}
         t = Time.now
         io = open_pipe(pipe_path(pipe))
@@ -517,7 +522,7 @@ module IRIS
           # 그것을 모르면 바뀐 것만 보내고, 렌더러는 나머지를 영영 못 받아
           # **조용히 빈 화면**이 됩니다. 세션 번호가 그것을 막습니다.
           session = ack['session']
-          if force || session.nil? || session != @session
+          if full || session.nil? || session != @session
             if @session && session != @session
               say '렌더러가 새로 떴습니다 — 전체를 보냅니다.'
             end
