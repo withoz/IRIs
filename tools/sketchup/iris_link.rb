@@ -129,7 +129,32 @@ module IRIS
                      sup[:elements].to_i, sup[:materials].to_i)
         end
         say(ok ? '렌더러 화면이 바뀌어야 합니다.' : '전송 실패 — 위 메시지를 보십시오.')
+        log_timing(extract_ms, pack_ms, send_ms, bytes.bytesize, st)
         ok
+      end
+
+      # 왕복 시간을 파일에도 남깁니다.
+      #
+      # 콘솔에만 찍으면 나중에 "무엇이 얼마나 빨라졌는가"를 말할 수 없습니다.
+      # 델타(5단계)는 정확히 그 질문에 답해야 하는 작업이므로, 고치기 전의
+      # 숫자가 남아 있어야 합니다.
+      def log_timing(extract_ms, pack_ms, send_ms, bytes, st)
+        dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
+        require 'fileutils'
+        FileUtils.mkdir_p(dir)
+        path = File.join(dir, 'sync_timing.csv')
+        head = !File.exist?(path)
+        File.open(path, 'a:UTF-8') do |f|
+          f.puts('time,extract_ms,pack_ms,send_ms,total_ms,bytes,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts([Time.now.strftime('%H:%M:%S'),
+                  format('%.1f', extract_ms), format('%.1f', pack_ms), format('%.1f', send_ms),
+                  format('%.1f', extract_ms + pack_ms + send_ms), bytes,
+                  st['triangles'].to_i, st['instances'].to_i,
+                  IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_extracted', 0).to_i,
+                  IRIS::Probe.instance_variable_get(:@stats)&.fetch('defs_cached', 0).to_i].join(','))
+        end
+      rescue StandardError
+        nil
       end
 
       # ---------------------------------------------------------------- 자동 모드

@@ -57,6 +57,7 @@ module IRIS
 
         test_move_instance(model)
         test_edit_definition(model)
+        test_nested_instance(model)
 
         say ''
         say '읽는 법'
@@ -64,6 +65,9 @@ module IRIS
         say '      변환행렬만 바뀌었고 그건 매 동기화마다 다시 읽습니다.'
         say '  [2] 정의 내부 편집은 그 정의 1개만 무효화되어야 합니다.'
         say '      숫자가 크면 옵저버가 과도하게 전파되는 것이고, 0이면 감지 실패입니다.'
+        say '  [3] 중첩 인스턴스 편집도 그 부모 정의 1개만 무효화되어야 합니다.'
+        say '      **이것이 0이면 자식 목록을 캐시할 수 없습니다.** 캐시된 배치가'
+        say '      낡은 채로 남고, 내용 비교도 같다고 판정해 전송조차 하지 않습니다.'
 
         write_log(out_dir)
       end
@@ -127,6 +131,83 @@ module IRIS
         rpt = IRIS::Probe.dirty_report
         say format('    재추출 예상: %s 삼각형 / %.1f ms', rpt[:tris], rpt[:est_ms]) if rpt
         say ''
+      end
+
+      # 중첩 인스턴스 편집.
+      #
+      # 왜 이것을 따로 재는가
+      #   캐시가 적중해도 프로브는 여전히 정의 안의 **모든 엔티티를 훑습니다** —
+      #   자식 인스턴스를 찾으려고. 이 모델에서 그것이 추출 시간의 대부분입니다
+      #   (면 27만 개를 매번 지나갑니다).
+      #
+      #   자식 목록까지 캐시하면 사라집니다. 다만 그러려면 **중첩 인스턴스를
+      #   건드렸을 때 그 부모 정의가 무효화된다**는 것이 보장되어야 합니다.
+      #   보장되지 않으면 배치가 낡은 채로 남고, 게다가 내용 비교가 "같다"고
+      #   판정해 전송조차 하지 않습니다 — 조용히 틀립니다.
+      #
+      #   최적화가 기대는 전제는 최적화보다 먼저 검증합니다.
+      def test_nested_instance(model)
+        parent = nil
+        child  = nil
+        model.definitions.each do |d|
+          next if d.count_instances.zero?
+          c = d.entities.grep(Sketchup::ComponentInstance).first ||
+              d.entities.grep(Sketchup::Group).first
+          next unless c
+          parent = d
+          child  = c
+          break
+        end
+        unless parent
+          say '[3] 중첩 인스턴스를 가진 정의를 찾지 못해 건너뜁니다.'
+          return
+        end
+
+        say "[3] 중첩 인스턴스 편집  (부모 '#{parent.name}' 안의 #{describe(child)})"
+
+        # 3-a 이동
+        before = dirty_count
+        model.start_operation('IRIS delta test: nested move', true)
+        child.transform!(Geom::Transformation.translation([0.001, 0, 0]))
+        model.commit_operation
+        moved = dirty_count - before
+        Sketchup.undo
+        report_nested('이동', moved)
+
+        # 3-b 숨김
+        before = dirty_count
+        model.start_operation('IRIS delta test: nested hide', true)
+        child.hidden = !child.hidden?
+        model.commit_operation
+        hidden = dirty_count - before
+        Sketchup.undo
+        report_nested('숨김', hidden)
+
+        # 3-c 이름 변경 — 배치 레코드에 들어가는 값입니다
+        before = dirty_count
+        model.start_operation('IRIS delta test: nested rename', true)
+        begin
+          child.name = "#{child.name}_iris_test"
+        rescue StandardError => e
+          say "    이름 변경 실패(#{e.message}) — 건너뜁니다"
+        end
+        model.commit_operation
+        renamed = dirty_count - before
+        Sketchup.undo
+        report_nested('이름', renamed)
+
+        say ''
+        if [moved, hidden, renamed].all? { |n| n >= 1 }
+          say '    ✅ 셋 다 잡힙니다 — 자식 목록을 캐시해도 안전합니다'
+        else
+          say '    ⚠ 놓치는 편집이 있습니다 — **자식 목록을 캐시하면 안 됩니다**'
+        end
+        say ''
+      end
+
+      def report_nested(label, delta)
+        mark = delta >= 1 ? '✅' : '⚠ 감지 실패'
+        say format('    %-4s 무효화 증가 %d  %s', label, delta, mark)
       end
 
       # ---------------------------------------------------------------- 보조
