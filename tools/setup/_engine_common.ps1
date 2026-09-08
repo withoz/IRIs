@@ -1,4 +1,4 @@
-# IRIS — 엔진 스크립트 공통부. 단독 실행용이 아닙니다.
+﻿# IRIS — 엔진 스크립트 공통부. 단독 실행용이 아닙니다.
 # dot-source 해서 씁니다:  . "$PSScriptRoot\_engine_common.ps1"
 
 $ErrorActionPreference = 'Stop'

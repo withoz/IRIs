@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 16:16:52 +0900
+Subject: [PATCH 7/7] =?UTF-8?q?iris:=20=ED=98=B8=EC=8A=A4=ED=8A=B8=20?=
+ =?UTF-8?q?=EB=B7=B0=ED=8F=AC=ED=8A=B8=20=EC=B9=B4=EB=A9=94=EB=9D=BC?=
+ =?UTF-8?q?=EB=A5=BC=20=EB=94=B0=EB=9D=BC=EA=B0=84=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sample::Animate 에서 IrisBridge 의 대기 카메라를 반영한다. 씬은 건드리지
+않는다 — 시점을 돌릴 때마다 36 MB 를 다시 받고 BLAS 를 다시 지을 수 없다.
+
+Z-up(미터) -> Y-up 변환과, fov_is_height 가 false 일 때의 수평→수직 화각
+변환을 여기서 한다.
+---
+ Rtxpt/Sample.cpp | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 70a1738..66016d8 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -788,6 +788,40 @@ void Sample::Animate(float fElapsedTimeSeconds)
+     if (iris::bridge::IrisBridge::Get().HasPendingScene())
+         SetCurrentScene(iris::bridge::kLiveSceneName, true);
+ 
++    // IRIS: 호스트 뷰포트 카메라를 따라간다.
++    //
++    // 씬은 건드리지 않는다 — 시점을 돌릴 때마다 36 MB 를 다시 받고 BLAS 를
++    // 다시 지을 수는 없다. 수백 바이트짜리 전용 메시지로 받아 여기서 반영한다.
++    if (iris::bridge::IrisBridge::Get().HasPendingCamera())
++    {
++        const auto c = iris::bridge::IrisBridge::Get().TakePendingCamera();
++
++        // 호스트는 Z-up(미터), 엔진은 Y-up. (x, y, z) -> (x, z, -y).
++        auto toYUp = [](const float v[3]) { return dm::float3(v[0], v[2], -v[1]); };
++
++        const dm::float3 eye    = toYUp(c.eye);
++        const dm::float3 target = toYUp(c.target);
++        const dm::float3 up     = toYUp(c.up);
++
++        if (dm::length(target - eye) > 1e-5f)
++        {
++            m_camera.LookAt(eye, target, up);
++
++            // SketchUp 의 fov 는 fov_is_height 가 false 면 **수평** 화각이다.
++            // 그대로 수직으로 쓰면 보이는 범위가 호스트와 달라진다.
++            float verticalFovDeg = c.fovDeg;
++            if (!c.fovIsHeight)
++            {
++                const float aspect = (c.aspect > 0.0f) ? c.aspect : 16.0f / 9.0f;
++                const float halfH  = dm::radians(c.fovDeg) * 0.5f;
++                verticalFovDeg = dm::degrees(2.0f * std::atan(std::tan(halfH) / aspect));
++            }
++            m_cameraVerticalFOV = dm::radians(verticalFovDeg);
++
++            m_ui.ResetAccumulation = true;
++        }
++    }
++
+     if (m_ui.ActualFPSLimiter()>0)    // essential for stable video recording
+         fElapsedTimeSeconds = 1.0f / (float)m_ui.ActualFPSLimiter();
+ 
