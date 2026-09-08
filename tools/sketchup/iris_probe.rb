@@ -53,11 +53,12 @@ module IRIS
     #   4 — 메시를 배열이 아니라 **미리 인코딩한 이진**으로 보관
     #   5 — 지오메트리 판(gen) 추가 — 델타의 근거
     #   6 — 뒷면 재질 면의 UV·법선·감김 교정 (메시 내용이 바뀝니다)
+    #   7 — v 뒤집기 (SketchUp 은 아래가 v=0, 렌더러는 위가 v=0)
     #
     # ⚠ 번호를 올리는 것을 잊어도 되도록, fetch 가 **필드 목록**도 함께
     #   봅니다(DefCache::CACHE_FIELDS). 실제로 한 번 잊었고 델타가 조용히
     #   꺼졌습니다.
-    CACHE_SCHEMA = 6
+    CACHE_SCHEMA = 7
 
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
@@ -1016,11 +1017,21 @@ module IRIS
             buf['n'].push(0.0, 0.0, use_back ? -1.0 : 1.0)
           end
 
+          # ⚠ **v 를 뒤집습니다.**
+          #
+          # SketchUp 의 텍스처 좌표는 v 가 **위로** 증가하고 이미지의 아래쪽
+          # 행이 v=0 입니다. 렌더러(glTF·D3D 관례)는 이미지의 **첫 행**이
+          # v=0 입니다. 그대로 넘기면 텍스처가 세로로 어긋납니다.
+          #
+          # 실측: 로고가 한 면에 **두 번** 나왔습니다. 오프라인으로 우리가 보낸
+          # UV·텍스처·변환·카메라만 가지고 깊이 버퍼를 넣어 그렸더니 렌더 화면이
+          # 그대로 재현됐고, v 를 뒤집으면 **한 번, 제자리**가 됐습니다.
+          # 서로 다른 두 텍스처에서 같은 결론이 나왔습니다.
           uv = (mesh.uv_at(i, !use_back) rescue nil)
           if uv
             @seen[:uvs] = true
             q = (uv.z.nil? || uv.z.abs < 1e-12) ? 1.0 : uv.z
-            buf['uv'].push((uv.x / q).to_f, (uv.y / q).to_f)
+            buf['uv'].push((uv.x / q).to_f, (1.0 - uv.y / q).to_f)
           else
             buf['uv'].push(0.0, 0.0)
           end
