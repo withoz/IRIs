@@ -176,6 +176,7 @@ module IRIS
         io = open_pipe(pipe_path(pipe))
         return say('파이프를 열지 못했습니다.') unless io
 
+        @bench_log = []
         results = []
         begin
           send_frame(io, MSG_HELLO, JSON.generate(hello_payload).b)
@@ -207,7 +208,24 @@ module IRIS
         say '-' * 52
         best = results.compact.max_by { |r| r[:mbps] }
         say format('가장 빠른 방식: %s  (%.0f MB/s)', best[:label], best[:mbps]) if best
+        write_bench_log
         results
+      end
+
+      # 측정 결과는 **파일로도** 남깁니다.
+      #
+      # 콘솔에만 찍으면 나중에 대조할 수 없고, 화면 밖의 사람에게 전달되지도
+      # 않습니다. 재는 도구를 만들면서 결과를 남기지 않는 것은 재지 않은 것과
+      # 크게 다르지 않습니다.
+      def write_bench_log
+        dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
+        require 'fileutils'
+        FileUtils.mkdir_p(dir)
+        path = File.join(dir, 'transport_bench.txt')
+        File.open(path, 'w:UTF-8') { |f| f.write((@bench_log || []).join("\n")) }
+        puts "[IRIS 링크] 저장: #{path}"
+      rescue StandardError => e
+        puts "[IRIS 링크] 저장 실패: #{e.message}"
       end
 
       def bench_one(io, payload, label)
@@ -503,6 +521,7 @@ module IRIS
 
       def say(line)
         puts "[IRIS 링크] #{line}"
+        @bench_log << line.to_s if @bench_log
         nil
       end
     end
