@@ -43,6 +43,9 @@ endif()
 add_library(iris_protocol STATIC
     iris/protocol/IrisbReader.h
     iris/protocol/IrisbReader.cpp
+    iris/protocol/Wire.h
+    iris/protocol/PipeServer.h
+    iris/protocol/PipeServer.cpp
 )
 
 target_include_directories(iris_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

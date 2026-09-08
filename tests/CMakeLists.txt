@@ -12,6 +12,13 @@ endif()
 
 set_target_properties(test_irisb_reader PROPERTIES FOLDER "IRIS/tests")
 
+add_executable(test_pipe_server test_pipe_server.cpp)
+target_link_libraries(test_pipe_server PRIVATE iris_protocol)
+if(MSVC)
+    target_compile_options(test_pipe_server PRIVATE -utf-8 ${IRIS_WARNING_FLAGS})
+endif()
+set_target_properties(test_pipe_server PROPERTIES FOLDER "IRIS/tests")
+
 # 실제 프로젝트 모델로 돕니다. 합성 데이터로는 놓치는 것이 있습니다.
 set(IRIS_TEST_SCENE
     "${CMAKE_SOURCE_DIR}/out/sketchup/240925_포르쉐_성수_PSC_10F_골프존.irisb"
@@ -19,6 +26,7 @@ set(IRIS_TEST_SCENE
 
 if(EXISTS "${IRIS_TEST_SCENE}")
     add_test(NAME irisb_reader COMMAND test_irisb_reader "${IRIS_TEST_SCENE}")
+    add_test(NAME pipe_server  COMMAND test_pipe_server  "${IRIS_TEST_SCENE}")
 else()
     message(STATUS "IRIS: 시험용 씬이 없어 irisb_reader 시험을 등록하지 않습니다: ${IRIS_TEST_SCENE}")
 endif()
