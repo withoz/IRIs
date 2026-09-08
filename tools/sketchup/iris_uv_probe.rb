@@ -24,7 +24,8 @@ require 'fileutils'
 module IRIS
   module UvProbe
     class << self
-      def run(out_dir: nil, match: nil, max_mats: 8, max_faces: 3)
+      # id: 'mat_114' 처럼 프로브가 붙인 재질 id 로 바로 찍을 수 있습니다.
+      def run(out_dir: nil, match: nil, id: nil, max_mats: 8, max_faces: 3)
         model = Sketchup.active_model
         return puts('[IRIS] 활성 모델이 없습니다.') unless model
 
@@ -49,9 +50,31 @@ module IRIS
 
         # --- 2. 텍스처 재질의 UV ---
         say '=' * 70
-        say '[2] 텍스처 UV'
+        say '[2] q(원근 나눗셈 항)의 부호'
+        say '=' * 70
+        say '    uv_at 은 UVQ 를 줍니다. 프로브는 u=x/q, v=y/q 로 나눕니다.'
+        say '    **q 가 음수면 u 와 v 가 함께 뒤집힙니다.**'
+        qn = qtot = 0
+        qmin = 1e30
+        qmax = -1e30
+        scan_q(model.entities, 0) do |q|
+          qtot += 1
+          qn += 1 if q < 0
+          qmin = q if q < qmin
+          qmax = q if q > qmax
+        end
+        say format('    정점 %d개 중 q<0 이 %d개  (범위 %.4f ~ %.4f)', qtot, qn, qmin, qmax)
+        say(qn.zero? ? '    -> q 는 원인이 아닙니다.' : '    -> **q 가 음수인 정점이 있습니다. 여기가 원인입니다.**')
+        say ''
+
+        say '=' * 70
+        say '[3] 텍스처 UV'
         say '=' * 70
         mats = model.materials.select { |m| (m.texture rescue nil) }
+        if id
+          want = id.to_s.sub(/\Amat_/, '').to_i
+          mats = mats.select { |m| m.entityID == want }
+        end
         if match
           re = Regexp.new(Regexp.escape(match), Regexp::IGNORECASE)
           mats = mats.select do |m|
@@ -83,6 +106,14 @@ module IRIS
             bu = uv_range(mesh, false)
             say format('    면[%d] 재질쪽=%s  점 %d개  넓이 %.3f m2',
                        idx, side, mesh.count_points, (f.area * 0.00064516 rescue 0))
+            (1..[mesh.count_points, 4].min).each do |i|
+              raw = (mesh.uv_at(i, true) rescue nil)
+              next unless raw
+              say format('          raw[%d] x=%.4f y=%.4f q=%.4f  ->  u=%.4f v=%.4f',
+                         i, raw.x.to_f, raw.y.to_f, raw.z.to_f,
+                         raw.x.to_f / (raw.z.to_f.abs < 1e-12 ? 1.0 : raw.z.to_f),
+                         raw.y.to_f / (raw.z.to_f.abs < 1e-12 ? 1.0 : raw.z.to_f))
+            end
             say format('          앞면 UV  u %.3f~%.3f  v %.3f~%.3f', *fu)
             say format('          뒷면 UV  u %.3f~%.3f  v %.3f~%.3f', *bu)
             say format('          경로 %s', info[:path])
@@ -152,6 +183,24 @@ module IRIS
             next unless defn
             nm = e.name.to_s.empty? ? defn.name.to_s : e.name.to_s
             scan_faces(defn.entities, mat, found, limit, "#{path}/#{nm}", depth + 1)
+          end
+        end
+      end
+
+      # 모델 전체에서 q 의 분포를 봅니다.
+      def scan_q(entities, depth, &blk)
+        return if depth > 12
+        entities.each do |e|
+          if e.is_a?(Sketchup::Face)
+            m = (e.mesh(1 | 2 | 4) rescue nil)
+            next unless m
+            (1..m.count_points).each do |i|
+              uv = (m.uv_at(i, true) rescue nil)
+              blk.call(uv.z.to_f) if uv
+            end
+          elsif e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
+            d = e.respond_to?(:definition) ? e.definition : nil
+            scan_q(d.entities, depth + 1, &blk) if d
           end
         end
       end

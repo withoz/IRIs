@@ -421,6 +421,22 @@ namespace iris::bridge
             ApplyTransform(node, n.transform.data());
             graph->Attach(parent, node);
 
+            // **거울 배치가 살아 있는가.**
+            //
+            // 이 모델은 인스턴스의 30%(1875개 중 557개)가 뒤집혀 놓여 있습니다.
+            // 정의 안의 지오메트리가 이미 거울이고 배치가 그것을 되돌리는
+            // 구조라, 부호를 잃으면 **모양은 그대로인데 텍스처 글자가
+            // 뒤집힙니다.** 실제로 로고가 그렇게 나왔습니다.
+            //
+            // 호스트가 센 값과 여기서 센 값이 맞는지 봅니다.
+            {
+                const double3 r0(n.transform[0], n.transform[1], n.transform[2]);
+                const double3 r1(n.transform[4], n.transform[5], n.transform[6]);
+                const double3 r2(n.transform[8], n.transform[9], n.transform[10]);
+                if (dot(cross(r0, r1), r2) < 0.0)
+                    ++stats.mirroredNodes;
+            }
+
             // 광원 프록시는 지오메트리 대신 광원 잎을 답니다. 위치와 방향은
             // 이 노드의 변환에서 나오므로 씬 그래프가 알아서 합성합니다.
             if (def->light.Valid())

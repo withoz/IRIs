@@ -47,6 +47,7 @@ namespace iris::bridge
         size_t   glassMaterials = 0;   // 반투명 + 텍스처 없음 -> 유리로 해석
         size_t   pointLights    = 0;
         size_t   spotLights     = 0;   // 면광원 근사도 여기에 포함됩니다
+        size_t   mirroredNodes  = 0;   // 행렬식이 음수인 노드 = 거울 배치
         size_t   meshesReused   = 0;   // 델타: 다시 만들지 않고 재사용한 정의
         size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)
         size_t   emissiveMaterials = 0;   // Enscape 자체발광
