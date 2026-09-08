@@ -371,3 +371,23 @@ namespace iris::bridge
         return v;
     }
 }
+
+namespace iris::bridge
+{
+    void IrisBridge::SetSunDirection(const float dirYUp[3], bool present)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_sunPresent = present;
+        if (present)
+            for (int i = 0; i < 3; ++i) m_sunDir[i] = dirYUp[i];
+    }
+
+    bool IrisBridge::GetSunDirection(float outDirYUp[3]) const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_sunPresent)
+            return false;
+        for (int i = 0; i < 3; ++i) outDirYUp[i] = m_sunDir[i];
+        return true;
+    }
+}

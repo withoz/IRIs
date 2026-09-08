@@ -690,6 +690,25 @@ namespace iris::bridge
             return;
         }
 
+        // 방향을 먼저 구해 둡니다 — 하늘이 태양을 소유하더라도 방향은 넘겨야
+        // 하기 때문입니다.
+        {
+            const double3 tz(src.sun.toward[0], src.sun.toward[1], src.sun.toward[2]);
+            const double3 ty = normalize(double3(tz.x, tz.z, -tz.y));
+            stats.sunDirYUp[0] = (float)ty.x;
+            stats.sunDirYUp[1] = (float)ty.y;
+            stats.sunDirYUp[2] = (float)ty.z;
+            stats.hasSun = true;
+        }
+
+        if (m_skyOwnsSun)
+        {
+            // 하늘이 태양을 그립니다. 방향광을 또 만들면 **그림자가 둘**이
+            // 됩니다 — 실외 모델에서 실제로 그렇게 나왔습니다.
+            stats.sunIrradiance = 0.0f;
+            return;
+        }
+
         auto leaf = m_typeFactory->CreateLeaf("DirectionalLight");
         auto light = std::dynamic_pointer_cast<de::DirectionalLight>(leaf);
         if (!light)
@@ -740,7 +759,6 @@ namespace iris::bridge
         light->color       = float3(1.0f, 1.0f, 1.0f);
         graph->AttachLeafNode(node, light);
 
-        stats.hasSun = true;
         stats.sunIrradiance = m_sunIrradiance;
     }
 

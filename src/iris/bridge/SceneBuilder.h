@@ -50,6 +50,8 @@ namespace iris::bridge
         bool     hasSun         = false;
         float    sunIrradiance  = 0.0f;   // lux
         float    sunElevationDeg = 0.0f;  // 0 이하면 밤입니다
+        // 엔진 좌표(Y-up)에서 태양을 향하는 단위 벡터. 하늘에 넘깁니다.
+        float    sunDirYUp[3]   = { 0.0f, 1.0f, 0.0f };
         size_t   mirroredNodes  = 0;   // 행렬식이 음수인 노드 = 거울 배치
         size_t   meshesReused   = 0;   // 델타: 다시 만들지 않고 재사용한 정의
         size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)
@@ -140,6 +142,10 @@ namespace iris::bridge
         //       -> 렌더러 단위 5.1. 하늘(약 1.0)의 5배. 맑은 날의 대비입니다.
         void SetSunIrradiance(float lux) { m_sunIrradiance = lux; }
 
+        // 참이면 태양을 **방향광으로 만들지 않습니다.** 하늘(절차적 하늘)이
+        // 태양을 그리고, 우리는 방향만 넘깁니다. 둘 다 만들면 그림자가 둘입니다.
+        void SetSkyOwnsSun(bool v) { m_skyOwnsSun = v; }
+
         void SetPhotometricScale(float cdPerUnit)
         {
             m_photometricScale = (cdPerUnit > 1e-6f) ? (1.0f / cdPerUnit) : 1.0f;
@@ -171,6 +177,7 @@ namespace iris::bridge
         std::string                             m_environmentMap;
         float                                   m_photometricScale = 1.0f / 5000.0f;
         float                                   m_sunIrradiance    = 100000.0f;
+        bool                                    m_skyOwnsSun       = false;
         TextureLoader                           m_textureLoader;
         InstanceMaterialApplier                 m_applyInstanceMaterials;
         void Trace(const std::string& msg) const { if (m_trace) m_trace(msg); }

@@ -84,6 +84,20 @@ namespace iris::bridge
         void RequestFullResync();
         [[nodiscard]] bool TakeFullResyncRequest();
 
+        // **하늘이 태양을 소유합니다.**
+        //
+        // 환경맵(HDRI)에는 태양이 구워져 있습니다. 거기에 우리 방향광을 더하면
+        // **그림자가 둘**이 됩니다 — 실외 모델에서 바로 드러났습니다.
+        //
+        // RTXPT 에는 절차적 하늘이 있고(SampleProceduralSky, Q2RTX 대기 산란
+        // 모델) 그 상수에 SunDir 이 있습니다. 다만 시각 스칼라로만 계산하고
+        // 실제 태양 벡터를 받지 않습니다. 여기에 호스트의 방향을 넣어 두면
+        // 하늘이 그것을 씁니다.
+        //
+        // 방향은 **엔진 좌표(Y-up)에서 태양을 향하는** 단위 벡터입니다.
+        void SetSunDirection(const float dirYUp[3], bool present);
+        [[nodiscard]] bool GetSunDirection(float outDirYUp[3]) const;
+
         // --- 텍스처 캐시 (프로세스 수명) ---
         //
         // **엔진의 TextureCache 는 씬을 로드할 때마다 비워집니다**
@@ -120,6 +134,8 @@ namespace iris::bridge
 
         mutable std::mutex                      m_mutex;
         bool                                    m_needFullResync = false;
+        bool                                    m_sunPresent     = false;
+        float                                   m_sunDir[3]      = { 0.0f, 1.0f, 0.0f };
         std::vector<uint8_t>                    m_pending;
         std::string                             m_textureBase;
         std::function<void(const std::string&)> m_log;
