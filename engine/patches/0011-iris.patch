@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 19:56:47 +0900
+Subject: [PATCH 11/11] =?UTF-8?q?iris:=20=EB=8D=B8=ED=83=80=20=E2=80=94=20?=
+ =?UTF-8?q?=ED=94=84=EB=A1=9C=EC=84=B8=EC=8A=A4=20=EC=88=98=EB=AA=85=20?=
+ =?UTF-8?q?=EB=A9=94=EC=8B=9C=20=EC=BA=90=EC=8B=9C,=20=EB=A7=8C=EC=A1=B1?=
+ =?UTF-8?q?=20=EB=AA=BB=20=ED=95=98=EB=8A=94=20=EB=8D=B8=ED=83=80=EB=8A=94?=
+ =?UTF-8?q?=20=EA=B1=B0=EC=A0=88?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp | 42 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 41 insertions(+), 1 deletion(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index c7426a6..478b770 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -210,16 +210,54 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+                 ex->IrisPerGeometryMaterial = std::move(overrides);
+         });
+ 
++    // **델타** — 이전 동기화에서 만든 메시를 넘겨줍니다.
++    //
++    // 호스트는 바뀐 정의의 지오메트리만 보냅니다. 나머지는 `geom: "same"` 으로
++    // 표시되어 오고, 그때는 여기 있는 것을 그대로 씁니다 — 정점 업로드도
++    // BLAS 재구축도 없습니다.
++    //
++    // 캐시는 **프로세스 수명**입니다. SceneBuilder 는 동기화마다 새로
++    // 만들어지므로 스스로는 아무것도 기억하지 못합니다. 텍스처 캐시와 같은
++    // 이유이고, 호스트의 세션 번호가 이 캐시의 유효 범위와 짝을 이룹니다.
++    static auto s_meshCache = std::make_shared<iris::bridge::SceneBuilder::MeshCache>();
++    builder.SetMeshCache(s_meshCache);
++
+     // SketchUp 은 광원을 주지 않습니다. 기본 하늘을 넣지 않으면 화면이 검게
+     // 나옵니다. 경로는 Assets 기준 상대경로입니다.
+     builder.SetEnvironmentMap("EnvironmentMaps/kloofendal_48d_partly_cloudy_puresky_4k_cube_bc6u.dds");
+-    m_SceneGraph = builder.Build(src, stats);
++    auto graph = builder.Build(src, stats);
++
++    // **만족시킬 수 없는 델타로 멀쩡한 씬을 갈아엎지 않습니다.**
++    //
++    // 호스트가 "이 정의는 안 바뀌었다"고 했는데 우리가 갖고 있지 않으면,
++    // 그대로 적용하면 그 물체가 사라집니다. 실제로 화면이 통째로 비었습니다.
++    //
++    // 왜 그런 일이 생기는가: SyncAck 는 "받았다"이지 "적용했다"가 아닙니다.
++    // 대기 중인 씬은 하나뿐이라, 36 MB 를 적용하는 800 ms 사이에 다음 것이
++    // 오면 앞의 것은 적용되지 못한 채 밀려납니다. 그러면 호스트의 기억과
++    // 렌더러의 실제 보유분이 어긋납니다.
++    //
++    // 여기서는 이전 씬을 그대로 두고 전체 재전송을 요청합니다. 화면은
++    // 한 순간도 비지 않습니다.
++    if (stats.meshesMissing > 0)
++    {
++        Trace("델타 거절 — 재사용할 메시 %zu개가 없습니다. 이전 씬을 유지합니다",
++              stats.meshesMissing);
++        log::warning("IRIS: 델타를 적용할 수 없습니다 (메시 %zu개 없음) — 이전 씬을 유지하고 "
++                     "전체 재전송을 요청합니다", stats.meshesMissing);
++        iris::bridge::IrisBridge::Get().RequestFullResync();
++        return m_SceneGraph != nullptr;   // 이전 씬이 있으면 그대로 씁니다
++    }
++
++    m_SceneGraph = std::move(graph);
+ 
+     Trace("구축 OK %.1f ms — 메시 %zu · 지오메트리 %zu · 인스턴스 %zu · 카메라 %zu · 삼각형 %llu",
+           stats.buildMs, stats.meshes, stats.geometries, stats.instances, stats.cameras,
+           (unsigned long long)stats.triangles);
+     Trace("조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu",
+           stats.pointLights, stats.spotLights, stats.lightLumens, stats.emissiveMaterials);
++    if (stats.meshesReused)
++        Trace("델타 — 메시 재사용 %zu (정점 업로드·BLAS 재구축 없음)", stats.meshesReused);
+     for (const auto& w : stats.warnings)
+         Trace("  경고: %s", w.c_str());
+ 
+@@ -240,6 +278,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     log::info("IRIS: 조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu · Specular 지정 %zu",
+               stats.pointLights, stats.spotLights, stats.lightLumens,
+               stats.emissiveMaterials, stats.specularOverrides);
++    if (stats.meshesReused)
++        log::info("IRIS: 델타 — 메시 재사용 %zu개 (정점 업로드·BLAS 재구축 없음)", stats.meshesReused);
+ 
+     // --- IRIS 기본 설정 ---
+     //
