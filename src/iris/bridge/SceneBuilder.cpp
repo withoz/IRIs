@@ -508,6 +508,34 @@ namespace iris::bridge
 
         const float3 color(spec.color[0], spec.color[1], spec.color[2]);
 
+        // **Enscape 프록시의 정면은 로컬 +Z 입니다.**
+        //
+        // Donut 은 로컬 -Z 를 정면으로 봅니다 (SceneTypes.cpp 의
+        // `Light::GetDirection() { return -normalize(row2); }` — glTF 규약).
+        // 정반대입니다.
+        //
+        // 실측(tools/sketchup/iris_lights_axis.rb, out/sketchup/lights_axis.txt):
+        //   SpotLight#1~#4 의 43개 인스턴스 **전부** 로컬 +Z 가 월드 아래를
+        //   향합니다. 15도 기울어진 월워셔(#1)까지 같은 규약입니다.
+        //
+        // 그대로 두면 다운라이트 43개가 전부 천장을 비춥니다. 그래서 광원 잎을
+        // 인스턴스 노드에 직접 달지 않고, **X축 180도 회전한 자식 노드**에
+        // 답니다. 자식의 -Z 가 부모의 +Z 가 됩니다.
+        //
+        // 인스턴스 노드의 변환은 건드리지 않습니다 — 그것은 호스트가 보낸
+        // 값이고, 델타 추적이 그 위에서 돌아갑니다.
+        auto host = node;
+        if (isSpot)
+        {
+            host = std::make_shared<de::SceneGraphNode>();
+            host->SetName("IRIS_LightAxis");
+            const dquat flipX(0.0, 1.0, 0.0, 0.0);   // w, x, y, z — X축 180도
+            const double3 zero(0.0, 0.0, 0.0);
+            const double3 one(1.0, 1.0, 1.0);
+            host->SetTransform(&zero, &flipX, &one);
+            graph->Attach(node, host);
+        }
+
         if (isSpot)
         {
             auto light = std::dynamic_pointer_cast<de::SpotLight>(leaf);
@@ -558,7 +586,7 @@ namespace iris::bridge
             ++stats.pointLights;
         }
 
-        graph->AttachLeafNode(node, leaf);
+        graph->AttachLeafNode(host, leaf);
         stats.lightLumens += spec.lumens;
     }
 
