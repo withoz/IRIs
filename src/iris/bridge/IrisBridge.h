@@ -129,6 +129,7 @@ namespace iris::bridge
 
         CameraState                             m_camera;
         bool                                    m_hasCamera = false;
+        uint64_t                                m_cameraCount = 0;
 
         mutable std::mutex                      m_texMutex;
         std::unordered_map<std::string, std::shared_ptr<donut::engine::LoadedTexture>> m_textures;

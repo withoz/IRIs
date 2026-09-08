@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 16:50:22 +0900
+Subject: [PATCH 8/8] =?UTF-8?q?iris:=20=EB=9D=BC=EC=9D=B4=EB=B8=8C=20?=
+ =?UTF-8?q?=EC=B9=B4=EB=A9=94=EB=9D=BC=EA=B0=80=20=EB=93=A4=EC=96=B4?=
+ =?UTF-8?q?=EC=98=A4=EB=A9=B4=20=EC=9E=90=EC=9C=A0=20=EC=B9=B4=EB=A9=94?=
+ =?UTF-8?q?=EB=9D=BC=EB=A1=9C=20=EB=90=98=EB=8F=8C=EB=A6=B0=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+씬 카메라가 선택돼 있으면 Sample::Animate 가 매 프레임 UpdateCameraFromScene
+으로 덮어써서 호스트 시점이 무시된다. 라이브 링크가 도는 동안에는 자유
+카메라(인덱스 0)여야 한다.
+---
+ Rtxpt/Sample.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 66016d8..e83da71 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -818,6 +818,15 @@ void Sample::Animate(float fElapsedTimeSeconds)
+             }
+             m_cameraVerticalFOV = dm::radians(verticalFovDeg);
+ 
++            // 씬 카메라가 선택돼 있으면 아래에서 매 프레임 덮어씁니다.
++            // 라이브 링크가 켜져 있는 동안에는 자유 카메라(0)여야 합니다.
++            if (m_selectedCameraIndex != 0)
++            {
++                log::info("IRIS: 씬 카메라(%d)가 선택돼 있어 자유 카메라로 되돌립니다 — "
++                          "호스트 시점을 따라가려면 그래야 합니다", m_selectedCameraIndex);
++                m_selectedCameraIndex = 0;
++            }
++
+             m_ui.ResetAccumulation = true;
+         }
+     }

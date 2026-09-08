@@ -2,6 +2,7 @@
 
 #include <donut/engine/TextureCache.h>
 
+#include <cstdio>
 #include <cstring>
 #include <json/json.h>
 
@@ -194,9 +195,24 @@ namespace iris::bridge
             if (doc["fov_is_height"].isBool())    c.fovIsHeight = doc["fov_is_height"].asBool();
             if (doc["aspect"].isNumeric())        c.aspect      = static_cast<float>(doc["aspect"].asDouble());
 
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_camera    = c;
-            m_hasCamera = true;
+            uint64_t n = 0;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_camera    = c;
+                m_hasCamera = true;
+                n = ++m_cameraCount;
+            }
+            // 매초 오므로 처음 몇 번과 이후 가끔만 알립니다.
+            if (n <= 3 || n % 30 == 0)
+            {
+                char buf[192];
+                std::snprintf(buf, sizeof(buf),
+                              "카메라 수신 #%llu  눈(%.2f, %.2f, %.2f) fov %.1f%s",
+                              (unsigned long long)n,
+                              c.eye[0], c.eye[1], c.eye[2], c.fovDeg,
+                              c.fovIsHeight ? " (수직)" : " (수평)");
+                say(buf);
+            }
         };
 
         protocol::PipeServerConfig cfg;
