@@ -48,6 +48,8 @@ namespace iris::bridge
         size_t   cameras     = 0;
         bool     hasEnvLight = false;
         size_t   maxDepth    = 0;
+        size_t   inheritingBuckets = 0;   // 재질이 없어 상속 대상인 버킷
+        size_t   overriddenSubInstances = 0;   // 인스턴스 재질이 실제로 적용된 (인스턴스×지오메트리)
         double   buildMs     = 0.0;
 
         std::vector<std::string> warnings;
@@ -85,6 +87,25 @@ namespace iris::bridge
             std::function<std::shared_ptr<donut::engine::LoadedTexture>(const std::filesystem::path&)>;
         void SetTextureLoader(TextureLoader loader) { m_textureLoader = std::move(loader); }
 
+        // **재질 상속** — SketchUp 에서 면에 재질이 없으면 상위 인스턴스의 재질을
+        // 씁니다. 같은 정의가 인스턴스마다 다른 색으로 보일 수 있습니다.
+        //
+        // glTF 는 이것을 못 합니다. 메시가 인스턴스 간 공유되므로 재질을 메시에
+        // 박아야 하고, 인스턴스별로 다르게 하려면 메시를 복제해야 해서 인스턴싱
+        // 이득이 사라집니다([05번 5절](../../docs/05-씬-델타-프로토콜.md)).
+        //
+        // 레이트레이서는 할 수 있습니다. RTXPT 는 재질 인덱스를
+        // **서브인스턴스(인스턴스×지오메트리) 단위**로 들고 있습니다
+        // (SubInstanceData::GlobalGeometryIndex_PTMaterialDataIndex).
+        // 지오메트리는 한 벌만 두고 인스턴스마다 다른 재질을 낼 수 있습니다.
+        //
+        // 이 계층은 RTXPT 타입을 몰라야 하므로 **적용은 호출자에게 넘깁니다.**
+        // 넘기는 벡터는 지오메트리 개수와 같은 길이이고, 덮어쓸 자리만 채워집니다.
+        using InstanceMaterialApplier =
+            std::function<void(donut::engine::MeshInstance&,
+                               std::vector<std::shared_ptr<donut::engine::Material>>&&)>;
+        void SetInstanceMaterialApplier(InstanceMaterialApplier fn) { m_applyInstanceMaterials = std::move(fn); }
+
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
         std::shared_ptr<donut::engine::SceneGraph> Build(const protocol::Scene& src, BuildStats& stats);
 
@@ -92,6 +113,7 @@ namespace iris::bridge
         std::function<void(const std::string&)> m_trace;
         std::string                             m_environmentMap;
         TextureLoader                           m_textureLoader;
+        InstanceMaterialApplier                 m_applyInstanceMaterials;
         void Trace(const std::string& msg) const { if (m_trace) m_trace(msg); }
 
         std::shared_ptr<donut::engine::SceneTypeFactory> m_typeFactory;
@@ -101,6 +123,10 @@ namespace iris::bridge
         std::unordered_map<std::string, std::shared_ptr<donut::engine::Material>> m_materials;
         std::shared_ptr<donut::engine::Material>                                  m_defaultMaterial;
         std::unordered_map<std::string, std::shared_ptr<donut::engine::MeshInfo>> m_meshes;
+
+        // 정의별로 "이 버킷은 재질을 상속한다"를 기록합니다. 지오메트리 순서와
+        // 같은 길이이며, 인스턴스 재질을 어디에 꽂을지 정하는 데 씁니다.
+        std::unordered_map<std::string, std::vector<bool>> m_inherits;
 
         void BuildMaterials(const protocol::Scene& src, BuildStats& stats);
 

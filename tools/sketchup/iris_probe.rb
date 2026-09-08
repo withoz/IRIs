@@ -92,6 +92,34 @@ module IRIS
         @observers = {}   # entityID => [definition, observer]
         @mat_obs   = nil
         @mat_model = nil
+        @suspended = false
+        @suppressed = { elements: 0, materials: 0 }
+      end
+
+      # 추출 중에는 무효화를 받지 않습니다.
+      #
+      # 우리가 읽는 동작 자체가 옵저버를 깨울 수 있습니다 — face.mesh() 의
+      # 삼각분할 결과가 엔티티에 캐시되거나, 텍스처를 만지면 머티리얼 옵저버가
+      # 뜹니다. 그러면 추출이 끝나자마자 전체가 다시 dirty 가 되어 **자동
+      # 동기화가 편집이 없는데도 매초 돕니다.** 렌더러는 매번 누적을 초기화하므로
+      # 화면이 영원히 수렴하지 않습니다. 실제로 그렇게 됐습니다.
+      #
+      # SketchUp 은 단일 스레드이므로 추출 중에 사용자 편집이 끼어들 수 없습니다.
+      # 따라서 이 구간의 무효화는 전부 우리가 만든 것입니다.
+      def suspend
+        prev = @suspended
+        @suspended = true
+        yield
+      ensure
+        @suspended = prev
+      end
+
+      def suppressed_counts
+        @suppressed
+      end
+
+      def reset_suppressed
+        @suppressed = { elements: 0, materials: 0 }
       end
 
       def fetch(defn)
@@ -112,6 +140,10 @@ module IRIS
       end
 
       def mark_dirty(key)
+        if @suspended
+          @suppressed[:elements] += 1
+          return
+        end
         e = @entries[key]
         e[:dirty] = true if e
       end
@@ -119,6 +151,10 @@ module IRIS
       # 머티리얼이 바뀌면 어느 정의가 그걸 쓰는지 모르므로 전부 무효화한다.
       # 머티리얼 편집은 드물어서 이 정도로 충분하다.
       def invalidate_materials
+        if @suspended
+          @suppressed[:materials] += 1
+          return
+        end
         @entries.each_value { |e| e[:dirty] = true }
       end
 
@@ -221,12 +257,19 @@ module IRIS
 
         scene = nil
         begin
-          scene = build_scene(model)
+          # 추출 중 옵저버 무효화를 막습니다. 자세한 이유는 DefCache#suspend 주석.
+          @cache&.reset_suppressed
+          if @cache
+            @cache.suspend { scene = build_scene(model) }
+          else
+            scene = build_scene(model)
+          end
         rescue BudgetExceeded
           @truncated = true
         ensure
           Sketchup.status_text = ''
         end
+        @suppressed = @cache&.suppressed_counts
         @elapsed = Time.now - t0
 
         path = nil

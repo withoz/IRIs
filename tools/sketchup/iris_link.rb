@@ -80,6 +80,15 @@ module IRIS
         say format('전송 %8.1f ms   %.0f MB/s', send_ms,
                    bytes.bytesize / 1048576.0 / [send_ms / 1000.0, 1e-9].max)
         say format('합계 %8.1f ms', extract_ms + pack_ms + send_ms)
+
+        # 추출 중 우리 스스로 만든 무효화. 0이 아니면 그만큼 옵저버가
+        # 우리 읽기 동작에 반응했다는 뜻입니다 — 억제하지 않으면 자동 동기화가
+        # 편집 없이도 매초 돕니다.
+        sup = IRIS::Probe.instance_variable_get(:@suppressed)
+        if sup && (sup[:elements].to_i + sup[:materials].to_i) > 0
+          say format('  (추출 중 자체 무효화 억제: 엔티티 %d · 머티리얼 %d)',
+                     sup[:elements].to_i, sup[:materials].to_i)
+        end
         say(ok ? '렌더러 화면이 바뀌어야 합니다.' : '전송 실패 — 위 메시지를 보십시오.')
         ok
       end
