@@ -30,3 +30,17 @@ if(EXISTS "${IRIS_TEST_SCENE}")
 else()
     message(STATUS "IRIS: 시험용 씬이 없어 irisb_reader 시험을 등록하지 않습니다: ${IRIS_TEST_SCENE}")
 endif()
+
+# 합성 배선 씬.
+#
+# 실제 모델은 사용자가 편집하면 내용이 바뀝니다. 조명·PBR 처럼 **없어도
+# 오류가 안 나는** 기능은 그것만으로 시험하면 어느 날 조용히 0이 되어도
+# 모릅니다. 값이 고정된 씬이 하나 있어야 합니다.
+#
+# 생성:  python tools/rtxpt/iris_make_test_scene.py out/test/wiring.irisb
+set(IRIS_WIRING_SCENE "${CMAKE_SOURCE_DIR}/out/test/wiring.irisb")
+if(EXISTS "${IRIS_WIRING_SCENE}")
+    add_test(NAME irisb_wiring COMMAND test_irisb_reader "${IRIS_WIRING_SCENE}")
+else()
+    message(STATUS "IRIS: 배선 시험 씬이 없습니다 (tools/rtxpt/iris_make_test_scene.py 로 생성): ${IRIS_WIRING_SCENE}")
+endif()

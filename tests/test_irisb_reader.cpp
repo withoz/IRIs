@@ -12,6 +12,7 @@
 #include "iris/protocol/IrisbReader.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -66,19 +67,33 @@ namespace
         std::printf("\n오류 경로\n");
         Scene s;
 
+        // ⚠ 파일 크기를 가정하지 않습니다.
+        //
+        // 처음에는 good.begin() + 4096 / + 65536 으로 잘랐습니다. 36 MB 모델만
+        // 쓰던 동안에는 문제가 없었지만, 6 KB 짜리 합성 씬을 넣자 **끝을 넘어가
+        // 시험이 세그폴트로 죽었습니다.** 리더가 아니라 시험의 버그였습니다.
+        const size_t head = good.size() < 4096 ? good.size() : size_t(4096);
+        const size_t cut  = good.size() < 65537 ? good.size() - 1 : size_t(65536);
+
+        if (good.size() < 64)
+        {
+            Check(false, "오류 경로 시험에 쓰기엔 파일이 너무 작습니다");
+            return;
+        }
+
         {   // 너무 짧음
             ReadResult r = ReadIrisbMemory(good.data(), 16, s);
             Check(!r.ok, "16바이트 입력을 거부한다: " + r.error);
         }
         {   // MAGIC 훼손
-            std::vector<uint8_t> bad(good.begin(), good.begin() + 4096);
+            std::vector<uint8_t> bad(good.begin(), good.begin() + head);
             bad[3] = 'X';
             ReadResult r = ReadIrisbMemory(bad.data(), bad.size(), s);
             Check(!r.ok && r.error.find("MAGIC") != std::string::npos,
                   "잘못된 MAGIC 을 거부한다: " + r.error);
         }
         {   // 형식 버전 999
-            std::vector<uint8_t> bad(good.begin(), good.begin() + 4096);
+            std::vector<uint8_t> bad(good.begin(), good.begin() + head);
             const uint32_t v = 999;
             std::memcpy(bad.data() + 8, &v, 4);
             ReadResult r = ReadIrisbMemory(bad.data(), bad.size(), s);
@@ -86,7 +101,7 @@ namespace
                   "모르는 형식 버전을 거부한다: " + r.error);
         }
         {   // 선언 크기가 파일보다 큼 (잘린 파일)
-            std::vector<uint8_t> bad(good.begin(), good.begin() + 65536);
+            std::vector<uint8_t> bad(good.begin(), good.begin() + cut);
             ReadResult r = ReadIrisbMemory(bad.data(), bad.size(), s);
             Check(!r.ok, "잘린 파일을 거부한다: " + r.error);
         }
@@ -111,6 +126,10 @@ int main(int argc, char** argv)
         return 2;
     }
     const std::filesystem::path path = argv[1];
+
+    // 버퍼링을 끕니다. 시험이 죽으면 버퍼에 남은 출력이 통째로 날아가
+    // "어디서 죽었는지" 조차 알 수 없습니다 — 실제로 그랬습니다.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     std::printf("IRIS .irisb 리더 시험\n파일: %s\n\n", path.string().c_str());
 
@@ -210,6 +229,77 @@ int main(int argc, char** argv)
             Check(maxIdx < b.VertexCount(),
                   "최대 인덱스 " + std::to_string(maxIdx) + " < 정점 수 " + std::to_string(b.VertexCount()));
         }
+    }
+
+    // --- 조명과 PBR (Enscape) ---
+    //
+    // 여섯 단계(SketchUp -> 프로브 -> .irisb -> 리더 -> 씬 구축 -> 렌더러)를
+    // 지나가는 동안 어느 한 곳이 필드를 흘리면 **오류 없이 조용히** 조명이
+    // 사라집니다. 실제로 strip_def 가 떨어뜨릴 뻔했습니다. 여기서 못을 박습니다.
+    {
+        size_t lights = 0, spots = 0, points = 0, areas = 0, withGeometry = 0;
+        double lumens = 0.0;
+        bool   badCone = false, badIntensity = false;
+
+        for (const auto& [key, d] : scene.definitions)
+        {
+            if (!d.light.Valid())
+                continue;
+            ++lights;
+            lumens += d.light.lumens;
+
+            switch (d.light.kind)
+            {
+            case LightSpec::Kind::Spot:   ++spots;  break;
+            case LightSpec::Kind::Point:  ++points; break;
+            default:                      ++areas;  break;
+            }
+
+            // 광원 프록시에 지오메트리가 남아 있으면 조명 앞에 물체가 뜹니다.
+            if (!d.meshes.empty())
+                ++withGeometry;
+
+            // 원뿔각은 **반각**입니다. 90도를 넘으면 RTXPT 의 cos 비교가 무너집니다.
+            if (d.light.kind == LightSpec::Kind::Spot &&
+                !(d.light.outerDeg > 0.0f && d.light.outerDeg < 90.0f &&
+                  d.light.innerDeg >= 0.0f && d.light.innerDeg <= d.light.outerDeg))
+                badCone = true;
+
+            // NaN·음수는 리더가 걸러야 합니다. 통과하면 광원 선택 가중치가 무너집니다.
+            const float v = (d.light.kind == LightSpec::Kind::Spot ||
+                             d.light.kind == LightSpec::Kind::Point)
+                          ? d.light.intensity : d.light.radiance;
+            if (!(v > 0.0f) || !std::isfinite(v))
+                badIntensity = true;
+        }
+
+        std::printf("\n조명 %zu종 (스포트 %zu · 점 %zu · 면 %zu) · 총 광속 %.0f lm\n",
+                    lights, spots, points, areas, lumens);
+        if (lights > 0)
+        {
+            Check(!badCone,      "스포트 원뿔각이 반각 범위(0~90도) 안이다");
+            Check(!badIntensity, "모든 광원의 세기가 유한한 양수다");
+            CheckEq(withGeometry, size_t(0),
+                    "광원 프록시에 남은 지오메트리");
+        }
+
+        size_t pbr = 0, emissive = 0;
+        bool   badPbr = false;
+        for (const auto& m : scene.materials)
+        {
+            if (!m.pbr.present)
+                continue;
+            ++pbr;
+            if (m.pbr.hasEmissive)
+                ++emissive;
+            // 리더가 0~1 로 조여야 합니다.
+            if (m.pbr.roughness < 0.0f || m.pbr.roughness > 1.0f ||
+                m.pbr.metalness < 0.0f || m.pbr.metalness > 1.0f)
+                badPbr = true;
+        }
+        std::printf("PBR 재질 %zu / %zu (발광 %zu)\n", pbr, scene.materials.size(), emissive);
+        if (pbr > 0)
+            Check(!badPbr, "거칠기·금속성이 0~1 로 조여져 있다");
     }
 
     // --- 텍스처 ---
