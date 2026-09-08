@@ -693,11 +693,9 @@ namespace iris::bridge
         // 방향을 먼저 구해 둡니다 — 하늘이 태양을 소유하더라도 방향은 넘겨야
         // 하기 때문입니다.
         {
-            const double3 tz(src.sun.toward[0], src.sun.toward[1], src.sun.toward[2]);
-            const double3 ty = normalize(double3(tz.x, tz.z, -tz.y));
-            stats.sunDirYUp[0] = (float)ty.x;
-            stats.sunDirYUp[1] = (float)ty.y;
-            stats.sunDirYUp[2] = (float)ty.z;
+            // 하늘은 Z-up 이므로 호스트 벡터를 그대로 넘깁니다(위 주석 참조).
+            for (int i = 0; i < 3; ++i)
+                stats.sunDirZUp[i] = src.sun.toward[i];
             stats.hasSun = true;
         }
 

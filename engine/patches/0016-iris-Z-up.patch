@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 21:54:59 +0900
+Subject: [PATCH 16/16] =?UTF-8?q?iris:=20=EC=A0=88=EC=B0=A8=EC=A0=81=20?=
+ =?UTF-8?q?=ED=95=98=EB=8A=98=EC=9D=80=20Z-up=20-=20=ED=98=B8=EC=8A=A4?=
+ =?UTF-8?q?=ED=8A=B8=20=EB=B2=A1=ED=84=B0=EB=A5=BC=20=EB=B3=80=ED=99=98=20?=
+ =?UTF-8?q?=EC=97=86=EC=9D=B4=20=EC=82=AC=EC=9A=A9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp                      |  4 +--
+ .../Lighting/Distant/SampleProceduralSky.cpp  | 26 ++++++++++++-------
+ 2 files changed, 18 insertions(+), 12 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 78ad86f..31dd12b 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -271,7 +271,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+           stats.pointLights, stats.spotLights, stats.lightLumens, stats.emissiveMaterials);
+     Trace("거울 배치 노드 %zu개", stats.mirroredNodes);
+     // 하늘에 태양 방향을 넘깁니다. 절차적 하늘이 이것을 씁니다.
+-    iris::bridge::IrisBridge::Get().SetSunDirection(stats.sunDirYUp, stats.hasSun);
++    iris::bridge::IrisBridge::Get().SetSunDirection(stats.sunDirZUp, stats.hasSun);
+ 
+     Trace("태양 %s%s", stats.hasSun ? "O" : "X",
+           stats.hasSun ? (" (" + std::to_string((int)stats.sunIrradiance) + " lux)").c_str() : "");
+@@ -299,7 +299,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               stats.emissiveMaterials, stats.specularOverrides);
+     if (stats.hasSun && stats.sunIrradiance <= 0.0f)
+         log::info("IRIS: 태양 — 하늘이 소유 (고도 %.1f도, 방향 %.3f %.3f %.3f)",
+-                  stats.sunElevationDeg, stats.sunDirYUp[0], stats.sunDirYUp[1], stats.sunDirYUp[2]);
++                  stats.sunElevationDeg, stats.sunDirZUp[0], stats.sunDirZUp[1], stats.sunDirZUp[2]);
+     else
+         log::info("IRIS: 태양 %s (%.0f lux)", stats.hasSun ? "적용" : "없음", stats.sunIrradiance);
+     if (stats.meshesReused)
+diff --git a/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp b/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
+index 47baf03..7662967 100644
+--- a/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
++++ b/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
+@@ -157,23 +157,29 @@ bool SampleProceduralSky::Update( double sceneTime, ProceduralSkyConstants & out
+     // **그리고 태양은 하나여야 합니다.** 하늘에 태양이 있는데 방향광을 또
+     // 더하면 그림자가 둘이 됩니다 — 실외 모델에서 실제로 그렇게 나왔습니다.
+     //
+-    // ⚠ 부호: 이 하늘의 SunDir 은 **빛이 나아가는 방향**입니다.
+-    //   호스트가 주는 것은 태양을 향하는 방향이므로 뒤집습니다.
+-    //   (태양을 향하는 벡터를 그대로 넣었더니 화면이 밤이 됐습니다. 기본
+-    //    midday 프리셋의 sunDir 도 Y(위) 성분이 음수입니다.)
++    // ⚠ 이 하늘은 **Z-up** 입니다 (Q2RTX 대기 산란 코드를 가져온 것).
++    //   엔진 씬은 Y-up 인데 하늘만 다릅니다. 호스트(SketchUp)도 Z-up 이므로
++    //   **변환 없이 그대로** 넣습니다.
++    //
++    //   실측으로 확정했습니다 — 기본 midday 프리셋의 sunDir 이
++    //   (0.240, 0.222, 0.945) 인데 Z-up 으로 읽어야 고도 70.9도(정오)가 되고,
++    //   Y-up 으로 읽으면 12.8도가 됩니다. Y-up 으로 넣었을 때 화면이 밤이
++    //   된 것도 같은 이유입니다.
+     {
+         float hostSun[3];
+         if (iris::bridge::IrisBridge::Get().GetSunDirection(hostSun))
+         {
+-            const float3 travel = normalize(float3(-hostSun[0], -hostSun[1], -hostSun[2]));
++            const float3 hs = normalize(float3(hostSun[0], hostSun[1], hostSun[2]));
+             static float3 s_lastLogged = float3(0, 0, 0);
+-            if (length(travel - s_lastLogged) > 1e-4f)
++            if (length(hs - s_lastLogged) > 1e-4f)
+             {
+-                s_lastLogged = travel;
+-                donut::log::info("IRIS 하늘: 기본 sunDir (%.3f %.3f %.3f) -> 호스트 (%.3f %.3f %.3f)",
+-                                 sunDir.x, sunDir.y, sunDir.z, travel.x, travel.y, travel.z);
++                s_lastLogged = hs;
++                donut::log::info("IRIS 하늘: 기본 sunDir (%.3f %.3f %.3f) 고도 %.1f도 -> "
++                                 "호스트 (%.3f %.3f %.3f) 고도 %.1f도",
++                                 sunDir.x, sunDir.y, sunDir.z, dm::degrees(std::asin(dm::clamp(sunDir.z, -1.0f, 1.0f))),
++                                 hs.x, hs.y, hs.z, dm::degrees(std::asin(dm::clamp(hs.z, -1.0f, 1.0f))));
+             }
+-            sunDir = travel;
++            sunDir = hs;
+         }
+     }
+     outConstants.SunDir = sunDir;
