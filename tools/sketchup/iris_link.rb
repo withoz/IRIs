@@ -141,7 +141,9 @@ module IRIS
           # 무효화 표시는 **증명된 거짓**입니다 — 다시 뽑아 봤는데 내용이
           # 같았습니다. 지우지 않으면 다음 틱에도 또 뽑게 되어, 편집이 없는데도
           # 매초 전체 추출이 돕니다.
-          IRIS::Probe.instance_variable_get(:@def_cache)&.clear_dirty
+          cache0 = IRIS::Probe.instance_variable_get(:@def_cache)
+          cache0&.clear_dirty
+          cache0&.clear_materials_stale if cache0.respond_to?(:clear_materials_stale)
 
           # 매번 찍으면 콘솔이 계속 도는 것처럼 보입니다. 처음 몇 번과
           # 이후 가끔만 알립니다.
@@ -418,12 +420,18 @@ module IRIS
         return unless cache
 
         dirty = cache.dirty_entries
-        return if dirty.empty?
+        # 재질 속성만 바뀌면 정의는 하나도 무효화되지 않습니다(지오메트리가
+        # 그대로이므로). 그것도 보내야 할 변경입니다 — 안 그러면 재질 조정이
+        # 자동 모드에서 화면에 반영되지 않습니다.
+        mats = cache.respond_to?(:materials_stale?) && cache.materials_stale?
+        return if dirty.empty? && !mats
 
         @auto_busy = true
         begin
           # 이 줄도 매번 찍으면 시끄럽습니다. 실제로 보낸 경우만 sync 가 알립니다.
-          say "변경 감지: 정의 #{dirty.size}개" if @skipped.to_i.zero?
+          if @skipped.to_i.zero?
+            say(dirty.empty? ? '재질 변경 감지' : "변경 감지: 정의 #{dirty.size}개")
+          end
           sync(pipe: @auto_pipe)
         ensure
           @auto_busy = false

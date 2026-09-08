@@ -251,13 +251,28 @@ module IRIS
 
       # 머티리얼이 바뀌면 어느 정의가 그걸 쓰는지 모르므로 전부 무효화한다.
       # 머티리얼 편집은 드물어서 이 정도로 충분하다.
+      # 재질이 바뀌었다 — **지오메트리는 그대로입니다.**
+      #
+      # 예전에는 여기서 캐시 전체를 무효화했습니다. 재질 하나를 건드리면
+      # 정의 2,249개가 전부 다시 뽑혀 **131만 삼각형에 33초**가 걸렸고
+      # 111 MB 를 다시 보냈습니다. 지오메트리는 하나도 안 바뀌었는데요.
+      #
+      # 재질의 **속성**이 바뀐 것과 면에 **다른 재질을 칠한** 것은 다릅니다.
+      # 후자는 엔티티 변경이라 EntitiesObserver 가 그 정의만 정확히 잡습니다.
+      # 여기서 할 일은 **머티리얼 레코드를 다시 읽는 것**뿐입니다.
+      #
+      # 재질 조정은 라이브 링크에서 가장 흔한 작업입니다. 그때마다 전체
+      # 재추출이 도는 것은 제품으로 성립하지 않습니다.
       def invalidate_materials
         if @suspended
           @suppressed[:materials] += 1
           return
         end
-        @entries.each_value { |e| e[:dirty] = true }
+        @materials_stale = true
       end
+
+      def materials_stale? = @materials_stale ? true : false
+      def clear_materials_stale = (@materials_stale = false)
 
       def attach(defn)
         return if @observers.key?(defn.entityID)
@@ -365,8 +380,20 @@ module IRIS
           # 다른 파일을 열었으면 여기서 캐시가 스스로 비워집니다.
           @cache.check_model(model)
           @cache.attach_materials(model)
+
+          # 재질이 바뀌었으면 캐시된 머티리얼 레코드를 살아 있는 것으로
+          # 갈아 끼웁니다. 지오메트리는 건드리지 않습니다.
+          @refresh_materials = @cache.materials_stale?
+          if @refresh_materials
+            @mat_index = model.materials.each_with_object({}) do |m, h|
+              h["mat_#{m.entityID}"] = m
+            end
+            @stats['materials_refreshed'] = 1
+          end
         else
           @cache = nil
+          # 캐시가 없으면 어차피 전부 새로 뽑습니다.
+          @refresh_materials = false
         end
 
         @caps = probe_capabilities(model)
@@ -802,6 +829,9 @@ module IRIS
           d['instance_count'] = @instance_count[d['id']] || 0
         end
 
+        # 재질을 살아 있는 것으로 다시 읽었으면 표시를 지웁니다.
+        @cache.clear_materials_stale if @refresh_materials && @cache
+
         {
           'format'       => 'iris.sketchup.scene',
           'version'      => VERSION,
@@ -952,7 +982,14 @@ module IRIS
           meshes = hit[:meshes]
           gen    = hit[:gen]
           # 캐시된 메시가 참조하는 머티리얼 레코드를 이번 실행의 목록에 되살린다.
-          hit[:mats].each { |mid, rec| @materials[mid] ||= rec }
+          #
+          # 재질이 바뀌었으면 캐시된 레코드는 낡았습니다. 살아 있는 재질에서
+          # 다시 읽습니다 — **지오메트리는 다시 뽑지 않습니다.**
+          hit[:mats].each do |mid, rec|
+            next if @materials.key?(mid)
+            live = @refresh_materials ? @mat_index[mid] : nil
+            live ? register_material(live) : (@materials[mid] = rec)
+          end
           @stats['vertices']  += hit[:verts]
           @stats['triangles'] += hit[:tris]
           @stats['faces']     += hit[:faces]
@@ -1285,6 +1322,11 @@ module IRIS
         file = "#{key}.png"
         path = File.join(@texture_dir, file)
         rel  = "#{@texture_rel}/#{file}"
+        # 재질이 바뀌었으면 이미지 자체가 바뀌었을 수 있습니다. 파일이 있다고
+        # 그냥 쓰면 낡은 그림이 남습니다.
+        if @refresh_materials && File.exist?(path)
+          File.delete(path) rescue nil
+        end
         if File.exist?(path)
           # 이전 실행에서 이미 뽑아둔 것. 다시 쓰되 통계에는 따로 센다 —
           # 이걸 구분하지 않으면 "추출 0개"로 보고돼 실패한 것처럼 보인다.
@@ -1408,6 +1450,10 @@ module IRIS
         if (@stats['defs_extracted'] + @stats['defs_cached']) > 0
           hit = 100.0 * @stats['defs_cached'] / (@stats['defs_extracted'] + @stats['defs_cached'])
           w << format('     적중률        : %.1f%%', hit)
+        end
+        if @refresh_materials
+          # 재질만 바뀐 경우입니다. 지오메트리를 다시 뽑지 않은 것이 요점입니다.
+          w << '     재질 갱신     : O (지오메트리는 재추출하지 않음)'
         end
         if (@stats['kids_reused'].to_i + @stats['kids_rescanned'].to_i) > 0
           # 자식을 되쓴 정의는 **면을 아예 훑지 않았습니다.** 이 모델에서
