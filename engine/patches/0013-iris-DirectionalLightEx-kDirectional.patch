@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 20:39:57 +0900
+Subject: [PATCH 13/13] =?UTF-8?q?iris:=20=ED=83=9C=EC=96=91=20=E2=80=94=20?=
+ =?UTF-8?q?DirectionalLightEx=20=EC=99=80=20kDirectional=20=EB=B3=80?=
+ =?UTF-8?q?=ED=99=98=20=EC=B6=94=EA=B0=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+셰이더에는 kDirectional 이 이미 있었지만(PolymorphicLight.hlsli 의 DirectionalLight::Create) CPU 쪽 ConvertLight 에 빠져 있었습니다. RTXPT 는 태양을 환경맵에 구워 오는 것을 전제로 하기 때문입니다. 건축에서는 그럴 수 없습니다 - 태양 방향은 날짜/시각/위치가 정하고 그것은 호스트 모델이 들고 있습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp             |  3 +++
+ Rtxpt/Lighting/LightsBaker.cpp       | 31 ++++++++++++++++++++++++++++
+ Rtxpt/SampleCommon/ExtendedScene.cpp | 27 ++++++++++++++++++++++++
+ Rtxpt/SampleCommon/ExtendedScene.h   | 19 +++++++++++++++++
+ 4 files changed, 80 insertions(+)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 4f186a6..ddf5a4b 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -257,6 +257,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     Trace("조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu",
+           stats.pointLights, stats.spotLights, stats.lightLumens, stats.emissiveMaterials);
+     Trace("거울 배치 노드 %zu개", stats.mirroredNodes);
++    Trace("태양 %s%s", stats.hasSun ? "O" : "X",
++          stats.hasSun ? (" (" + std::to_string((int)stats.sunIrradiance) + " lux)").c_str() : "");
+     if (stats.meshesReused)
+         Trace("델타 — 메시 재사용 %zu (정점 업로드·BLAS 재구축 없음)", stats.meshesReused);
+     for (const auto& w : stats.warnings)
+@@ -279,6 +281,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     log::info("IRIS: 조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu · Specular 지정 %zu",
+               stats.pointLights, stats.spotLights, stats.lightLumens,
+               stats.emissiveMaterials, stats.specularOverrides);
++    log::info("IRIS: 태양 %s (%.0f lux)", stats.hasSun ? "적용" : "없음", stats.sunIrradiance);
+     if (stats.meshesReused)
+         log::info("IRIS: 델타 — 메시 재사용 %zu개 (정점 업로드·BLAS 재구축 없음)", stats.meshesReused);
+ 
+diff --git a/Rtxpt/Lighting/LightsBaker.cpp b/Rtxpt/Lighting/LightsBaker.cpp
+index 6cdb913..4508eda 100644
+--- a/Rtxpt/Lighting/LightsBaker.cpp
++++ b/Rtxpt/Lighting/LightsBaker.cpp
+@@ -525,6 +525,34 @@ static PolymorphicLightInfoFull ConvertLight( Light & light )
+              }*/
+ 
+ 	    } break;
++        // IRIS: 태양.
++        //
++        // 셰이더에는 kDirectional 이 이미 있었는데(PolymorphicLight.hlsli 의
++        // DirectionalLight::Create) CPU 쪽 변환에 빠져 있었습니다. RTXPT 는
++        // 태양을 환경맵에 구워 오는 것을 전제로 하기 때문입니다.
++        //
++        // 건축에서는 그럴 수 없습니다 — 태양 방향은 날짜·시각·위치가 정하고
++        // 그것은 호스트 모델이 들고 있습니다.
++        case LightType_Directional:
++        {
++            auto& sun = dynamic_cast<const DirectionalLightEx&>(light);
++
++            // 각지름이 0 이면 셰이더가 델타 광원 특수 경우로 빠집니다
++            // ("Assumed to be != 1 to avoid delta light special case").
++            // 태양의 실제 각지름은 0.53도입니다.
++            const float halfAngle = dm::clamp(dm::radians(sun.angularSize) * 0.5f,
++                                              0.0002f, dm::PI_f * 0.5f - 0.001f);
++            const float solidAngle = 2.0f * dm::PI_f * (1.0f - std::cos(halfAngle));
++
++            // irradiance 는 lux(lm/m^2). 원반에 고르게 퍼진다고 보고 라디언스로.
++            const float3 radiance = sun.color * (sun.irradiance / std::max(solidAngle, 1e-6f));
++
++            polymorphic.ColorTypeAndFlags = (uint32_t)PolymorphicLightType::kDirectional << kPolymorphicLightTypeShift;
++            packLightColor(radiance, polymorphic);
++            polymorphic.Direction1 = NDirToOctUnorm32(float3(normalize(sun.GetDirection())));
++            polymorphic.Scalars = fp32ToFp16(halfAngle) | (fp32ToFp16(solidAngle) << 16);
++        } break;
++
+         case LightType_Point: 
+         {
+             auto& point = dynamic_cast<const PointLightEx&>(light);
+@@ -603,7 +631,10 @@ bool LightsBaker::CollectAnalyticLightsCPU(const BakeSettings & settings, const
+         {
+         case LightType_Spot:
+         case LightType_Point:
++        case LightType_Directional:   // IRIS: 태양
+         {    
++            if (lightEx == nullptr)
++                break;   // LightExtension 이 없는 광원은 과거 프레임 대응을 못 합니다
+             LightSamplerLink& pastLink = lightEx->LightLink;
+             if (pastLink.IndexOrBase != -1 && pastLink.LastUpdateTag != m_lastFrameIndex) // if not used specifically during last frame, 
+                 pastLink.IndexOrBase = -1;
+diff --git a/Rtxpt/SampleCommon/ExtendedScene.cpp b/Rtxpt/SampleCommon/ExtendedScene.cpp
+index b5f3fe4..dac993d 100644
+--- a/Rtxpt/SampleCommon/ExtendedScene.cpp
++++ b/Rtxpt/SampleCommon/ExtendedScene.cpp
+@@ -99,6 +99,29 @@ void PointLightEx::Store(Json::Value& node) const
+     LightExtension::Store(node);
+ }
+ 
++// IRIS: 태양
++std::shared_ptr<SceneGraphLeaf> DirectionalLightEx::Clone()
++{
++    auto copy = std::make_shared<DirectionalLightEx>();
++    copy->color = color;
++    copy->irradiance = irradiance;
++    copy->angularSize = angularSize;
++    copy->Copy(*this);
++    return std::static_pointer_cast<SceneGraphLeaf>(copy);
++}
++
++void DirectionalLightEx::Load(const Json::Value& node)
++{
++    DirectionalLight::Load(node);
++    LightExtension::Load(node);
++}
++
++void DirectionalLightEx::Store(Json::Value& node) const
++{
++    DirectionalLight::Store(node);
++    LightExtension::Store(node);
++}
++
+ #pragma endregion
+ 
+ void EnvironmentLight::Load(const Json::Value& node)
+@@ -122,6 +145,10 @@ std::shared_ptr<donut::engine::SceneGraphLeaf> ExtendedSceneTypeFactory::CreateL
+     {
+         return std::make_shared<SpotLightEx>();
+     } else
++    if (type == "DirectionalLight")
++    {
++        return std::make_shared<DirectionalLightEx>();
++    } else
+     if (type == "PerspectiveCamera" || type == "PerspectiveCameraEx")
+     {
+         return std::make_shared<PerspectiveCameraEx>();
+diff --git a/Rtxpt/SampleCommon/ExtendedScene.h b/Rtxpt/SampleCommon/ExtendedScene.h
+index 3391167..4451aad 100644
+--- a/Rtxpt/SampleCommon/ExtendedScene.h
++++ b/Rtxpt/SampleCommon/ExtendedScene.h
+@@ -47,6 +47,25 @@ public:
+     void Store(Json::Value& node) const override;
+ };
+ 
++// IRIS: 태양.
++//
++// 셰이더에는 kDirectional 이 이미 있었지만(PolymorphicLight.hlsli) CPU 쪽
++// 변환에는 빠져 있었습니다. RTXPT 는 태양을 환경맵에 구워 오는 것을 전제로
++// 하기 때문입니다.
++//
++// 건축에서는 그럴 수 없습니다. 태양 방향은 **날짜·시각·위치**가 정하고,
++// 그것은 호스트 모델이 들고 있습니다. 환경맵에 구우면 시각을 바꿀 수 없습니다.
++//
++// LightExtension 을 함께 상속하는 이유: LightsBaker 가 광원마다
++// LightLink(과거 프레임 대응)를 요구합니다. 없으면 널 참조로 죽습니다.
++class DirectionalLightEx : public donut::engine::DirectionalLight, public LightExtension
++{
++public:
++    [[nodiscard]] std::shared_ptr<SceneGraphLeaf> Clone() override;
++    void Load(const Json::Value& node) override;
++    void Store(Json::Value& node) const override;
++};
++
+ 
+ struct MeshInstanceExtension
+ {

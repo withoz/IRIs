@@ -799,6 +799,7 @@ module IRIS
           'capabilities' => @caps,
           'materials'    => @materials.values,
           'views'        => (@scene_views_list = collect_views(model)),
+          'sun'          => (@sun = collect_sun(model)),
           'definitions'  => @definitions,
           'root'         => { 'meshes' => root_meshes, 'children' => root_children },
           'stats'        => scene_stats,
@@ -1154,6 +1155,45 @@ module IRIS
       # 임의로 카메라를 놓는 것보다 이 시점을 그대로 쓰는 것이 맞다.
       #
       # Enscape 계열 제품이 호스트의 뷰를 동기화하는 것도 같은 이유다.
+      # ------------------------------------------------------------------ 태양
+      #
+      # SketchUp 은 인공 광원은 주지 않지만 **태양은 줍니다.** 그림자 설정에
+      # 날짜·시각·위치가 들어 있고 그것으로 태양 방향이 정해집니다. 건축
+      # 렌더러에서 이것은 선택 사항이 아닙니다 — 실외는 물론이고 실내도
+      # 창으로 들어오는 빛이 그림의 대부분입니다.
+      #
+      # ⚠ SunDirection 은 **모델에서 태양을 향하는** 방향입니다. 빛이 나아가는
+      #   방향은 그 반대입니다. 부호를 잘못 쓰면 그림자가 정반대로 집니다.
+      def collect_sun(model)
+        si = (model.shadow_info rescue nil)
+        return nil unless si
+
+        d = (si['SunDirection'] rescue nil)
+        return nil unless d
+        v = [d.x.to_f, d.y.to_f, d.z.to_f]
+        len = Math.sqrt(v.inject(0.0) { |a, c| a + c * c })
+        return nil if len < 1e-9
+        v = v.map { |c| c / len }
+
+        {
+          # 태양을 향하는 단위 벡터 (모델 좌표계, Z-up)
+          'toward'        => v,
+          'shadows'       => (si['DisplayShadows'] rescue true) ? true : false,
+          'use_sun_only'  => (si['UseSunForAllShading'] rescue false) ? true : false,
+          # 0~100. Enscape 처럼 세기를 직접 주지는 않으므로 참고값입니다.
+          'light'         => (si['Light'] rescue nil),
+          'dark'          => (si['Dark'] rescue nil),
+          'time'          => (si['ShadowTime'].to_s rescue nil),
+          'city'          => (si['City'].to_s rescue nil),
+          'latitude'      => (si['Latitude'] rescue nil),
+          'longitude'     => (si['Longitude'] rescue nil),
+          'tz_offset'     => (si['TZOffset'] rescue nil),
+        }
+      rescue StandardError => e
+        @sun_error = e.message
+        nil
+      end
+
       def collect_views(model)
         out = []
 
@@ -1366,6 +1406,13 @@ module IRIS
         w << "     추출 실패 사유: #{@texture_error_msg}" if @texture_error_msg
         w << ''
         w << "     저장된 시점   : #{(@scene_views_list || []).size}"
+        if @sun
+          w << format('     태양          : 방향 (%.3f %.3f %.3f) · 그림자 %s · %s',
+                      @sun['toward'][0], @sun['toward'][1], @sun['toward'][2],
+                      @sun['shadows'] ? 'O' : 'X', @sun['time'].to_s[0, 24])
+        else
+          w << "     태양          : 없음#{@sun_error ? " (#{@sun_error})" : ''}"
+        end
         w << "     시점 수집 오류: #{@views_error}" if @views_error
         w << ''
         w << ' [3-b] Enscape 설정 (조명·PBR)'

@@ -175,6 +175,21 @@ namespace iris::protocol
         bool                 hasHeight   = false;
     };
 
+    // SketchUp 의 그림자 설정에서 온 태양.
+    //
+    // ⚠ toward 는 **모델에서 태양을 향하는** 방향입니다. 빛이 나아가는
+    //   방향은 그 반대입니다. 부호를 잘못 쓰면 그림자가 정반대로 집니다.
+    struct SunSpec
+    {
+        bool                 present  = false;
+        std::array<float, 3> toward{ 0.0f, 0.0f, 1.0f };   // Z-up 모델 좌표
+        bool                 shadows  = true;
+        float                light    = 0.0f;   // SketchUp 의 0~100 슬라이더
+        float                dark     = 0.0f;
+        std::string          time;
+        std::string          city;
+    };
+
     struct Stats
     {
         int64_t faces = 0, triangles = 0, vertices = 0;
@@ -198,6 +213,7 @@ namespace iris::protocol
         // --- 본문 ---
         std::vector<Material>                        materials;
         std::vector<View>                            views;
+        SunSpec                                      sun;
         std::unordered_map<std::string, Definition>  definitions;
         Definition                                   root;      // 최상위 메시 + 인스턴스
         Stats                                        stats;

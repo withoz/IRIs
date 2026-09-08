@@ -47,6 +47,8 @@ namespace iris::bridge
         size_t   glassMaterials = 0;   // 반투명 + 텍스처 없음 -> 유리로 해석
         size_t   pointLights    = 0;
         size_t   spotLights     = 0;   // 면광원 근사도 여기에 포함됩니다
+        bool     hasSun         = false;
+        float    sunIrradiance  = 0.0f;   // lux
         size_t   mirroredNodes  = 0;   // 행렬식이 음수인 노드 = 거울 배치
         size_t   meshesReused   = 0;   // 델타: 다시 만들지 않고 재사용한 정의
         size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)
@@ -127,6 +129,16 @@ namespace iris::bridge
         // 확인: 천장 패널 5076 cd/m^2 -> 1.02 (하늘과 비슷한 밝기. 맞습니다)
         //
         // 미결정 B(PBR·측광 범위)에서 정식화합니다.
+        // **맑은 날 정오의 직달 일사 조도(lux).**
+        //
+        // SketchUp 은 태양 방향만 주고 세기는 주지 않습니다. 물리 표준값을
+        // 기본으로 쓰고, 측광 변환(SetPhotometricScale)을 함께 통과시켜
+        // 인공 조명과 같은 척도 위에 놓습니다.
+        //
+        // 확인: 100,000 lux -> 흰 확산면의 휘도 0.8*100000/pi = 25,465 cd/m^2
+        //       -> 렌더러 단위 5.1. 하늘(약 1.0)의 5배. 맑은 날의 대비입니다.
+        void SetSunIrradiance(float lux) { m_sunIrradiance = lux; }
+
         void SetPhotometricScale(float cdPerUnit)
         {
             m_photometricScale = (cdPerUnit > 1e-6f) ? (1.0f / cdPerUnit) : 1.0f;
@@ -157,6 +169,7 @@ namespace iris::bridge
         std::function<void(const std::string&)> m_trace;
         std::string                             m_environmentMap;
         float                                   m_photometricScale = 1.0f / 5000.0f;
+        float                                   m_sunIrradiance    = 100000.0f;
         TextureLoader                           m_textureLoader;
         InstanceMaterialApplier                 m_applyInstanceMaterials;
         void Trace(const std::string& msg) const { if (m_trace) m_trace(msg); }
@@ -200,6 +213,12 @@ namespace iris::bridge
                         const std::shared_ptr<donut::engine::SceneGraphNode>& node,
                         const protocol::LightSpec& spec,
                         BuildStats& stats);
+
+        // SketchUp 그림자 설정의 태양을 방향광으로 만듭니다.
+        void BuildSun(const protocol::Scene& src,
+                      const std::shared_ptr<donut::engine::SceneGraph>& graph,
+                      const std::shared_ptr<donut::engine::SceneGraphNode>& parent,
+                      BuildStats& stats);
 
         // 기본 환경광. 자세한 이유는 SetEnvironmentMap 주석 참조.
         void BuildEnvironmentLight(const std::shared_ptr<donut::engine::SceneGraph>& graph,

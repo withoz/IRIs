@@ -529,6 +529,31 @@ namespace iris::protocol
         parser.opt      = &options;
         parser.warnings = &res.warnings;
 
+        // --- 태양 ---
+        {
+            const Json::Value& sv = doc["sun"];
+            if (sv.isObject())
+            {
+                SunSpec& sun = out.sun;
+                if (ReadVec(sv["toward"], sun.toward))
+                {
+                    const float len = std::sqrt(sun.toward[0] * sun.toward[0] +
+                                                sun.toward[1] * sun.toward[1] +
+                                                sun.toward[2] * sun.toward[2]);
+                    if (len > 1e-6f && std::isfinite(len))
+                    {
+                        for (auto& c : sun.toward) c /= len;
+                        sun.present = true;
+                        sun.shadows = GetBool(sv, "shadows", true);
+                        sun.light   = GetFloat(sv, "light", 0.0f);
+                        sun.dark    = GetFloat(sv, "dark", 0.0f);
+                        sun.time    = GetString(sv, "time");
+                        sun.city    = GetString(sv, "city");
+                    }
+                }
+            }
+        }
+
         const Json::Value& defs = doc["definitions"];
         if (defs.isObject())
         {

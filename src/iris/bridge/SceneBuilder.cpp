@@ -654,6 +654,77 @@ namespace iris::bridge
         stats.lightLumens += spec.lumens;
     }
 
+    // ---------------------------------------------------------------- 태양
+
+    void SceneBuilder::BuildSun(const protocol::Scene& src,
+                                const std::shared_ptr<de::SceneGraph>& graph,
+                                const std::shared_ptr<de::SceneGraphNode>& parent,
+                                BuildStats& stats)
+    {
+        if (!src.sun.present)
+            return;
+        if (!src.sun.shadows)
+        {
+            // 호스트에서 그림자를 꺼 두었으면 태양도 넣지 않습니다. 설계자가
+            // 일부러 끈 것을 렌더러가 되살리면 화면이 호스트와 달라집니다.
+            stats.warnings.push_back("호스트에서 그림자가 꺼져 있어 태양을 넣지 않습니다");
+            return;
+        }
+
+        auto leaf = m_typeFactory->CreateLeaf("DirectionalLight");
+        auto light = std::dynamic_pointer_cast<de::DirectionalLight>(leaf);
+        if (!light)
+        {
+            stats.warnings.push_back("팩토리가 DirectionalLight 를 만들지 못했습니다");
+            return;
+        }
+
+        // ⚠ toward 는 **태양을 향하는** 방향입니다(Z-up 모델 좌표).
+        //   빛이 나아가는 방향은 그 반대이고, Donut 은 노드의 로컬 -Z 를
+        //   그 방향으로 봅니다. 그러므로 노드의 **+Z 를 태양 쪽**에 둡니다.
+        //   부호를 틀리면 그림자가 정반대로 집니다.
+        double3 towardZUp(src.sun.toward[0], src.sun.toward[1], src.sun.toward[2]);
+
+        // 모델은 Z-up, 엔진은 Y-up. kZUpToYUp 과 같은 회전입니다.
+        double3 toward(towardZUp.x, towardZUp.z, -towardZUp.y);
+        if (length(toward) < 1e-9)
+            return;
+        toward = normalize(toward);
+
+        // +Z 가 태양을 향하는 정규직교 기저.
+        double3 up(0.0, 1.0, 0.0);
+        if (std::abs(dot(toward, up)) > 0.999)
+            up = double3(1.0, 0.0, 0.0);
+        double3 xa = normalize(cross(up, toward));
+        double3 ya = cross(toward, xa);
+
+        auto node = std::make_shared<de::SceneGraphNode>();
+        node->SetName("IRIS_Sun");
+        {
+            // 행 i = 로컬 e_i 의 상. row2 = +Z = 태양 쪽.
+            dquat q;
+            const double m00 = xa.x, m01 = xa.y, m02 = xa.z;
+            const double m10 = ya.x, m11 = ya.y, m12 = ya.z;
+            const double m20 = toward.x, m21 = toward.y, m22 = toward.z;
+            q.w = std::sqrt(std::max(0.0, 1.0 + m00 + m11 + m22)) * 0.5;
+            q.x = std::copysign(std::sqrt(std::max(0.0, 1.0 + m00 - m11 - m22)) * 0.5, m12 - m21);
+            q.y = std::copysign(std::sqrt(std::max(0.0, 1.0 - m00 + m11 - m22)) * 0.5, m20 - m02);
+            q.z = std::copysign(std::sqrt(std::max(0.0, 1.0 - m00 - m11 + m22)) * 0.5, m01 - m10);
+            const double3 zero(0.0, 0.0, 0.0);
+            const double3 one(1.0, 1.0, 1.0);
+            node->SetTransform(&zero, &q, &one);
+        }
+        graph->Attach(parent, node);
+
+        light->irradiance  = m_sunIrradiance * m_photometricScale;
+        light->angularSize = 0.53f;   // 태양의 실제 각지름(도)
+        light->color       = float3(1.0f, 1.0f, 1.0f);
+        graph->AttachLeafNode(node, light);
+
+        stats.hasSun = true;
+        stats.sunIrradiance = m_sunIrradiance;
+    }
+
     void SceneBuilder::BuildEnvironmentLight(const std::shared_ptr<de::SceneGraph>& graph,
                                              const std::shared_ptr<de::SceneGraphNode>& parent,
                                              BuildStats& stats)
@@ -844,6 +915,7 @@ namespace iris::bridge
 
         // 환경광은 루트에 답니다 — Z-up 회전 아래에 두면 하늘이 같이 돌아갑니다.
         Trace("환경광 시작");
+        BuildSun(src, graph, root, stats);
         BuildEnvironmentLight(graph, root, stats);
         Trace(stats.hasEnvLight ? "환경광 완료" : "환경광 없음");
 
