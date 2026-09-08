@@ -595,8 +595,27 @@ module IRIS
           'views'        => (@scene_views_list = collect_views(model)),
           'definitions'  => @definitions,
           'root'         => { 'meshes' => root_meshes, 'children' => root_children },
-          'stats'        => @stats,
+          'stats'        => scene_stats,
         }
+      end
+
+      # 씬 페이로드에 실을 통계.
+      #
+      # **씬을 설명하는 값만 담습니다.** 이번 실행이 어땠는지(캐시가 몇 개
+      # 맞았는지, 텍스처를 새로 뽑았는지)는 빼야 합니다.
+      #
+      # 그것들이 들어가면 편집이 없어도 실행마다 바이트가 달라집니다. 그러면
+      # "내용이 같으면 보내지 않는다"가 성립하지 않아 자동 동기화가 멈추지 않고,
+      # 렌더러는 매번 누적을 초기화해 화면이 영원히 수렴하지 않습니다.
+      # 실제로 그렇게 됐습니다 — generated 를 뺀 뒤에도 여기서 계속 달라졌습니다.
+      #
+      # 실행 통계는 @stats 에 그대로 남아 report 에 나옵니다.
+      SCENE_STAT_KEYS = %w[
+        faces triangles vertices instances definitions face_errors groups_skipped
+      ].freeze
+
+      def scene_stats
+        SCENE_STAT_KEYS.each_with_object({}) { |k, h| h[k] = @stats[k] }
       end
 
       # entities를 훑어 면은 메시로 누적하고, 인스턴스는 children에 추가한다.
