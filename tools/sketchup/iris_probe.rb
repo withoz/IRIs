@@ -49,7 +49,8 @@ module IRIS
     # 정의 캐시 레코드의 판. **머티리얼 레코드의 모양이 바뀌면 올리십시오.**
     # 올리지 않으면 같은 SketchUp 세션의 옛 캐시가 되살아나 새 필드가 빠집니다.
     #   2 — Enscape PBR(pbr) 필드 추가
-    CACHE_SCHEMA = 2
+    #   3 — 자식 엔티티 목록(kids)·엔티티 개수(esize) 추가
+    CACHE_SCHEMA = 3
 
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
@@ -151,9 +152,32 @@ module IRIS
         e
       end
 
-      def store(defn, meshes, mats, verts, tris, faces, seen)
+      # 자식 인스턴스를 **다시 쓸 수 있는가**.
+      #
+      # 캐시가 적중해도 지금까지는 정의 안의 모든 엔티티를 훑었습니다 —
+      # 자식을 찾으려고 면 27만 개를 매번 지나갔고, 그것이 추출 시간의
+      # 대부분이었습니다(194 ms).
+      #
+      # 자식 **엔티티 객체**만 들고 있으면 면을 건드리지 않고도 배치를 다시
+      # 읽을 수 있습니다. 값(변환·이름·숨김·재질)은 그때그때 새로 읽으므로
+      # 옵저버가 놓치는 편집(숨김·이름 변경 — 실측으로 확인됨)도 반영됩니다.
+      #
+      # 되쓸 수 없는 경우는 둘입니다.
+      #   - 엔티티 개수가 달라짐  = 자식이 추가·삭제됨
+      #   - 죽은 엔티티가 섞임    = 삭제 후 개수가 우연히 같아진 경우
+      # 어느 쪽이든 전체 순회로 되돌아갑니다.
+      def reusable_children(defn, hit)
+        kids = hit[:kids]
+        return nil unless kids
+        return nil unless hit[:esize] == (defn.entities.size rescue -1)
+        return nil unless kids.all? { |e| e.valid? rescue false }
+        kids
+      end
+
+      def store(defn, meshes, mats, verts, tris, faces, seen, kids = nil)
         @entries[defn.entityID] = {
           schema: CACHE_SCHEMA,
+          kids: kids, esize: (defn.entities.size rescue nil),
           meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces,
           # 능력 플래그(법선·UV 추출 성공 여부)도 함께 보관한다.
           # 이게 없으면 캐시 적중 시 accumulate_face 가 안 돌아서
@@ -662,7 +686,7 @@ module IRIS
       #   @stats 델타로 재면 자식 정의의 추출분까지 섞여 들어간다
       #   (collect_entities 가 자식 인스턴스를 만나면 그 정의도 추출하므로).
       #   캐시에 그 값을 넣으면 적중 시 자손이 조상 수만큼 중복 계산된다 — 실측 5.4배.
-      def collect_entities(entities, children, skip_faces: false, counts: nil)
+      def collect_entities(entities, children, skip_faces: false, counts: nil, kids: nil)
         buckets = {}
         entities.each do |e|
           case e
@@ -670,16 +694,31 @@ module IRIS
             accumulate_face(e, buckets, counts) unless skip_faces
           when Sketchup::ComponentInstance
             children << instance_entry(e, e.definition)
+            kids << e if kids
           when Sketchup::Group
             defn = group_definition(e)
             if defn
               children << instance_entry(e, defn)
+              kids << e if kids
             else
               @stats['groups_skipped'] += 1
             end
           end
         end
         skip_faces ? nil : finalize_buckets(buckets, counts)
+      end
+
+      # 캐시된 자식 엔티티에서 배치 레코드를 다시 만든다.
+      # 면을 건드리지 않는 것이 요점이다.
+      def children_from_cache(kids, children)
+        kids.each do |e|
+          defn = e.is_a?(Sketchup::Group) ? group_definition(e) : (e.definition rescue nil)
+          if defn
+            children << instance_entry(e, defn)
+          else
+            @stats['groups_skipped'] += 1
+          end
+        end
       end
 
       def instance_entry(inst, defn)
@@ -728,8 +767,16 @@ module IRIS
 
         hit = @cache && @cache.fetch(defn)
         if hit
-          # 면 추출만 건너뛰고 자식은 그대로 훑는다.
-          collect_entities(defn.entities, children, skip_faces: true)
+          # 자식 엔티티를 들고 있고 아직 유효하면 **면을 아예 훑지 않는다.**
+          # 값은 새로 읽으므로 숨김·이름 변경도 반영된다.
+          reuse = @cache.reusable_children(defn, hit)
+          if reuse
+            children_from_cache(reuse, children)
+            @stats['kids_reused'] = (@stats['kids_reused'] || 0) + 1
+          else
+            collect_entities(defn.entities, children, skip_faces: true)
+            @stats['kids_rescanned'] = (@stats['kids_rescanned'] || 0) + 1
+          end
           meshes = hit[:meshes]
           # 캐시된 메시가 참조하는 머티리얼 레코드를 이번 실행의 목록에 되살린다.
           hit[:mats].each { |mid, rec| @materials[mid] ||= rec }
@@ -743,7 +790,8 @@ module IRIS
           @stats['defs_cached'] += 1
         else
           local = { faces: 0, tris: 0, verts: 0 }
-          meshes = collect_entities(defn.entities, children, counts: local)
+          kids   = []
+          meshes = collect_entities(defn.entities, children, counts: local, kids: kids)
           if @cache
             mats = {}
             meshes.each do |mb|
@@ -752,7 +800,7 @@ module IRIS
             end
             @cache.store(defn, meshes, mats,
                          local[:verts], local[:tris], local[:faces],
-                         { normals: @seen[:normals], uvs: @seen[:uvs] })
+                         { normals: @seen[:normals], uvs: @seen[:uvs] }, kids)
           end
           @stats['defs_extracted'] += 1
         end
@@ -1099,6 +1147,11 @@ module IRIS
           hit = 100.0 * @stats['defs_cached'] / (@stats['defs_extracted'] + @stats['defs_cached'])
           w << format('     적중률        : %.1f%%', hit)
         end
+        if (@stats['kids_reused'].to_i + @stats['kids_rescanned'].to_i) > 0
+          # 자식을 되쓴 정의는 **면을 아예 훑지 않았습니다.** 이 모델에서
+          # 면 순회가 추출 시간의 대부분이었습니다.
+          w << "     자식 재사용   : #{@stats['kids_reused']} / 재순회 #{@stats['kids_rescanned']}"
+        end
         w << ''
         w << ' [2] 인스턴싱 (= BLAS 재사용)'
         w << "     정의 수       : #{defs}"
@@ -1202,6 +1255,7 @@ module IRIS
           'definitions' => 0, 'face_errors' => 0, 'groups_skipped' => 0,
           'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
           'defs_extracted' => 0, 'defs_cached' => 0, 'lights_defs' => 0,
+          'kids_reused' => 0, 'kids_rescanned' => 0,
         }
         @definitions    = {}
         @materials      = {}
