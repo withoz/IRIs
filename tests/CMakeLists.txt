@@ -7,7 +7,7 @@ add_executable(test_irisb_reader test_irisb_reader.cpp)
 target_link_libraries(test_irisb_reader PRIVATE iris_protocol)
 
 if(MSVC)
-    target_compile_options(test_irisb_reader PRIVATE -utf-8 /W4 /WX)
+    target_compile_options(test_irisb_reader PRIVATE -utf-8 ${IRIS_WARNING_FLAGS})
 endif()
 
 set_target_properties(test_irisb_reader PROPERTIES FOLDER "IRIS/tests")
