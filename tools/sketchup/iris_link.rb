@@ -157,6 +157,87 @@ module IRIS
         nil
       end
 
+      # ---------------------------------------------------------------- 전송 실측
+
+      # 전송이 왜 느린지 재는 도구.
+      #
+      # 실측: 36 MB 에 1066 ms = **34 MB/s**. 같은 파이프에 Python 참조 구현은
+      # 2029 MB/s 를 냅니다. 60배 차이이므로 파이프가 아니라 Ruby 쪽 쓰기
+      # 방식의 문제입니다. 어느 방식이 빠른지는 **재서** 정합니다.
+      #
+      # 모르는 프레임 종류는 서버가 읽고 버립니다(05번 9절). 그래서 씬을
+      # 다시 만들게 하지 않고 순수 전송 속도만 잴 수 있습니다.
+      #
+      # 사용법:  IRIS::Link.bench_transport
+      BENCH_TYPE = 9999
+
+      def bench_transport(pipe: 'iris', mb: 32)
+        payload = ('x' * (1024 * 1024)).b * mb
+        io = open_pipe(pipe_path(pipe))
+        return say('파이프를 열지 못했습니다.') unless io
+
+        results = []
+        begin
+          send_frame(io, MSG_HELLO, JSON.generate(hello_payload).b)
+          type, = recv_frame(io)
+          return say('Hello 응답이 없습니다.') unless type == MSG_HELLO_ACK
+
+          say ''
+          say format('전송 실측 — %d MB', mb)
+          say '-' * 52
+
+          results << bench_one(io, payload, 'IO#write 통째로') do |x|
+            io.write(x)
+          end
+          results << bench_one(io, payload, 'syswrite 통째로') do |x|
+            write_all(io, x, x.bytesize)
+          end
+          [64 * 1024, 1024 * 1024, 8 * 1024 * 1024].each do |chunk|
+            label = chunk >= 1024 * 1024 ? "syswrite #{chunk / 1024 / 1024} MB 씩" : 'syswrite 64 KB 씩'
+            results << bench_one(io, payload, label) { |x| write_all(io, x, chunk) }
+          end
+
+          send_frame(io, MSG_BYE, ''.b)
+        rescue StandardError => e
+          say "실패: #{e.class} — #{e.message}"
+        ensure
+          io.close rescue nil
+        end
+
+        say '-' * 52
+        best = results.compact.max_by { |r| r[:mbps] }
+        say format('가장 빠른 방식: %s  (%.0f MB/s)', best[:label], best[:mbps]) if best
+        results
+      end
+
+      def bench_one(io, payload, label)
+        t0 = Time.now
+        io.write([BENCH_TYPE, 0].pack('VV'))
+        io.write([payload.bytesize].pack('Q<'))
+        yield payload
+        io.flush
+        ms   = (Time.now - t0) * 1000.0
+        mbps = payload.bytesize / 1048576.0 / [ms / 1000.0, 1e-9].max
+        say format('  %-22s %8.1f ms   %7.0f MB/s', label, ms, mbps)
+        { label: label, ms: ms, mbps: mbps }
+      rescue StandardError => e
+        say format('  %-22s 실패: %s', label, e.message)
+        nil
+      end
+
+      # syswrite 로 직접 씁니다. Ruby 의 버퍼 계층을 거치지 않습니다.
+      # syswrite 는 **일부만 쓰고 돌아올 수 있으므로** 반드시 반복해야 합니다.
+      def write_all(io, data, chunk)
+        off = 0
+        len = data.bytesize
+        while off < len
+          n = io.syswrite(data.byteslice(off, [chunk, len - off].min))
+          break if n.nil? || n <= 0
+          off += n
+        end
+        off
+      end
+
       # ---------------------------------------------------------------- 자동 모드
 
       # 편집을 감시하다가 바뀌면 보냅니다. 이것이 "라이브 링크"의 모습입니다.
