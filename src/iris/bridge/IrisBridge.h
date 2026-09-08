@@ -94,10 +94,10 @@ namespace iris::bridge
         // 실제 태양 벡터를 받지 않습니다. 여기에 호스트의 방향을 넣어 두면
         // 하늘이 그것을 씁니다.
         //
-        // 방향은 **호스트 좌표(Z-up)에서 태양을 향하는** 단위 벡터입니다.
-        // 절차적 하늘이 Z-up 이라 변환하지 않습니다.
-        void SetSunDirection(const float dirZUp[3], bool present);
-        [[nodiscard]] bool GetSunDirection(float outDirZUp[3]) const;
+        // 방향은 **엔진 월드(Y-up)에서 태양을 향하는** 단위 벡터입니다.
+        // 하늘은 자기 좌표로 다시 바꿔서 씁니다.
+        void SetSunDirection(const float dirYUp[3], bool present);
+        [[nodiscard]] bool GetSunDirection(float outDirYUp[3]) const;
 
         // --- 텍스처 캐시 (프로세스 수명) ---
         //

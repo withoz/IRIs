@@ -50,16 +50,12 @@ namespace iris::bridge
         bool     hasSun         = false;
         float    sunIrradiance  = 0.0f;   // lux
         float    sunElevationDeg = 0.0f;  // 0 이하면 밤입니다
-        // 태양을 향하는 단위 벡터.
+        // 태양을 향하는 단위 벡터. **엔진 월드(Y-up)** 입니다.
         //
-        // ⚠ 절차적 하늘(Q2RTX 대기 산란 코드)은 **Z-up** 입니다. 엔진 씬은
-        //   Y-up 인데 하늘만 다릅니다. 그래서 호스트의 Z-up 벡터를 **변환 없이
-        //   그대로** 넘깁니다.
-        //
-        //   실측으로 확정했습니다 — 기본 midday 프리셋의 sunDir 이
-        //   (0.240, 0.222, 0.945) 인데, Z-up 으로 읽어야 고도 70.9도(정오)가
-        //   되고 Y-up 으로 읽으면 12.8도(어정쩡)가 됩니다.
-        float    sunDirZUp[3]   = { 0.0f, 0.0f, 1.0f };
+        // 하늘은 여기서 다시 자기 좌표로 바꿉니다 — EnvMapBaker.hlsl 이
+        // cubeDir 에 적용하는 것과 같은 변환(Y·Z 맞바꾸기)을 씁니다.
+        // 그 변환을 여기서 미리 하면 두 곳에 같은 규칙이 흩어집니다.
+        float    sunDirYUp[3]   = { 0.0f, 1.0f, 0.0f };
         size_t   mirroredNodes  = 0;   // 행렬식이 음수인 노드 = 거울 배치
         size_t   meshesReused   = 0;   // 델타: 다시 만들지 않고 재사용한 정의
         size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)

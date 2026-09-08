@@ -374,20 +374,20 @@ namespace iris::bridge
 
 namespace iris::bridge
 {
-    void IrisBridge::SetSunDirection(const float dirZUp[3], bool present)
+    void IrisBridge::SetSunDirection(const float dirYUp[3], bool present)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_sunPresent = present;
         if (present)
-            for (int i = 0; i < 3; ++i) m_sunDir[i] = dirZUp[i];
+            for (int i = 0; i < 3; ++i) m_sunDir[i] = dirYUp[i];
     }
 
-    bool IrisBridge::GetSunDirection(float outDirZUp[3]) const
+    bool IrisBridge::GetSunDirection(float outDirYUp[3]) const
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_sunPresent)
             return false;
-        for (int i = 0; i < 3; ++i) outDirZUp[i] = m_sunDir[i];
+        for (int i = 0; i < 3; ++i) outDirYUp[i] = m_sunDir[i];
         return true;
     }
 }

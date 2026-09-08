@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 22:11:46 +0900
+Subject: [PATCH 17/17] =?UTF-8?q?iris:=20=ED=95=98=EB=8A=98=20SunDir=20?=
+ =?UTF-8?q?=EC=97=90=20EnvMapBaker=20=EC=9D=98=20toLocal=20=EB=A7=9E?=
+ =?UTF-8?q?=EB=B0=94=EA=BE=B8=EA=B8=B0=20=EC=A0=81=EC=9A=A9?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp                      |  4 ++--
+ .../Lighting/Distant/SampleProceduralSky.cpp  | 22 +++++++++++--------
+ 2 files changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 31dd12b..78ad86f 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -271,7 +271,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+           stats.pointLights, stats.spotLights, stats.lightLumens, stats.emissiveMaterials);
+     Trace("거울 배치 노드 %zu개", stats.mirroredNodes);
+     // 하늘에 태양 방향을 넘깁니다. 절차적 하늘이 이것을 씁니다.
+-    iris::bridge::IrisBridge::Get().SetSunDirection(stats.sunDirZUp, stats.hasSun);
++    iris::bridge::IrisBridge::Get().SetSunDirection(stats.sunDirYUp, stats.hasSun);
+ 
+     Trace("태양 %s%s", stats.hasSun ? "O" : "X",
+           stats.hasSun ? (" (" + std::to_string((int)stats.sunIrradiance) + " lux)").c_str() : "");
+@@ -299,7 +299,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               stats.emissiveMaterials, stats.specularOverrides);
+     if (stats.hasSun && stats.sunIrradiance <= 0.0f)
+         log::info("IRIS: 태양 — 하늘이 소유 (고도 %.1f도, 방향 %.3f %.3f %.3f)",
+-                  stats.sunElevationDeg, stats.sunDirZUp[0], stats.sunDirZUp[1], stats.sunDirZUp[2]);
++                  stats.sunElevationDeg, stats.sunDirYUp[0], stats.sunDirYUp[1], stats.sunDirYUp[2]);
+     else
+         log::info("IRIS: 태양 %s (%.0f lux)", stats.hasSun ? "적용" : "없음", stats.sunIrradiance);
+     if (stats.meshesReused)
+diff --git a/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp b/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
+index 7662967..ccdad47 100644
+--- a/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
++++ b/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
+@@ -157,25 +157,29 @@ bool SampleProceduralSky::Update( double sceneTime, ProceduralSkyConstants & out
+     // **그리고 태양은 하나여야 합니다.** 하늘에 태양이 있는데 방향광을 또
+     // 더하면 그림자가 둘이 됩니다 — 실외 모델에서 실제로 그렇게 나왔습니다.
+     //
+-    // ⚠ 이 하늘은 **Z-up** 입니다 (Q2RTX 대기 산란 코드를 가져온 것).
+-    //   엔진 씬은 Y-up 인데 하늘만 다릅니다. 호스트(SketchUp)도 Z-up 이므로
+-    //   **변환 없이 그대로** 넣습니다.
++    // ⚠ 이 하늘은 **자기 좌표(Z-up)** 를 씁니다 (Q2RTX 대기 산란 코드).
++    //   EnvMapBaker.hlsl 이 큐브 방향을 넘길 때 같은 변환을 씁니다:
+     //
+-    //   실측으로 확정했습니다 — 기본 midday 프리셋의 sunDir 이
+-    //   (0.240, 0.222, 0.945) 인데 Z-up 으로 읽어야 고도 70.9도(정오)가 되고,
+-    //   Y-up 으로 읽으면 12.8도가 됩니다. Y-up 으로 넣었을 때 화면이 밤이
+-    //   된 것도 같은 이유입니다.
++    //       float3x3 toLocal = { 1,0,0,  0,0,1,  0,1,0 };   // Y 와 Z 를 맞바꿈
++    //       float3 localDirection = mul( cubeDir, toLocal );
++    //
++    //   그러므로 SunDir 도 **같은 변환을 거친 값**이어야 합니다. 호스트가 주는
++    //   것은 엔진 월드(Y-up) 벡터이므로 여기서 (x, z, y) 로 바꿉니다.
++    //
++    //   이 한 줄을 몰라서 방위가 어긋났습니다. 고도는 맞고 방위만 틀렸던 것이
++    //   단서였습니다 — 맞바꾸기는 위 성분을 보존하기 때문입니다.
+     {
+         float hostSun[3];
+         if (iris::bridge::IrisBridge::Get().GetSunDirection(hostSun))
+         {
+-            const float3 hs = normalize(float3(hostSun[0], hostSun[1], hostSun[2]));
++            const float3 w  = normalize(float3(hostSun[0], hostSun[1], hostSun[2]));
++            const float3 hs = float3(w.x, w.z, w.y);   // toLocal 과 같은 맞바꾸기
+             static float3 s_lastLogged = float3(0, 0, 0);
+             if (length(hs - s_lastLogged) > 1e-4f)
+             {
+                 s_lastLogged = hs;
+                 donut::log::info("IRIS 하늘: 기본 sunDir (%.3f %.3f %.3f) 고도 %.1f도 -> "
+-                                 "호스트 (%.3f %.3f %.3f) 고도 %.1f도",
++                                 "호스트 로컬 (%.3f %.3f %.3f) 고도 %.1f도",
+                                  sunDir.x, sunDir.y, sunDir.z, dm::degrees(std::asin(dm::clamp(sunDir.z, -1.0f, 1.0f))),
+                                  hs.x, hs.y, hs.z, dm::degrees(std::asin(dm::clamp(hs.z, -1.0f, 1.0f))));
+             }
