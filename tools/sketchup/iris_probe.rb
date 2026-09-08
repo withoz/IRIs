@@ -518,21 +518,10 @@ module IRIS
         }
       end
 
-      # 'e' = little-endian f32, 'V' = little-endian u32.
-      # pack 은 C 구현이라 요소당 Ruby 호출이 없다 — 이것이 JSON 대비 이득의 실체다.
-      def push_f32(blob, arr)
-        return nil if arr.nil? || arr.empty?
-        off = blob.bytesize
-        blob << arr.pack('e*')
-        { 'off' => off, 'count' => arr.length }
-      end
-
-      def push_u32(blob, arr)
-        return nil if arr.nil? || arr.empty?
-        off = blob.bytesize
-        blob << arr.pack('V*')
-        { 'off' => off, 'count' => arr.length }
-      end
+      # ('e' = little-endian f32, 'V' = little-endian u32 로 인코딩하는 일은
+      #  이제 finalize_buckets 에서 **추출할 때 한 번만** 합니다. 여기 있던
+      #  push_f32/push_u32 는 그래서 사라졌습니다 — 남겨 두면 동작하는 것처럼
+      #  보이지만 BlobPlan 에는 << 가 없어 그 자리에서 죽습니다.)
 
       # .irisb 바이트를 **메모리에** 만든다. 라이브 링크(iris_link.rb)가 이것을
       # 그대로 파이프로 보냅니다 — 파일을 거치지 않습니다.

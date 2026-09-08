@@ -54,7 +54,32 @@ module IRIS
       #
       # 캐시가 살아 있으면 바뀐 정의만 다시 추출합니다 — 실측 47배 차이입니다
       # (docs/05-씬-델타-프로토콜.md 7절).
+      # 실패를 파일에 남깁니다.
+      #
+      # SketchUp 콘솔의 예외는 저(작업자)에게 보이지 않습니다. 매번 사용자에게
+      # 무엇이 찍혔는지 물어보는 것은 왕복 한 번을 통째로 버리는 일입니다.
       def sync(pipe: 'iris', textures: true, force: false)
+        sync_inner(pipe: pipe, textures: textures, force: force)
+      rescue StandardError, ScriptError => e
+        log_failure(e)
+        raise
+      end
+
+      def log_failure(e)
+        dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
+        require 'fileutils'
+        FileUtils.mkdir_p(dir)
+        File.open(File.join(dir, 'sync_error.txt'), 'w:UTF-8') do |f|
+          f.puts Time.now.strftime('%Y-%m-%d %H:%M:%S')
+          f.puts "#{e.class}: #{e.message}"
+          (e.backtrace || []).first(20).each { |l| f.puts "  #{l}" }
+        end
+        say "실패를 out/sketchup/sync_error.txt 에 남겼습니다: #{e.class} — #{e.message}"
+      rescue StandardError
+        nil
+      end
+
+      def sync_inner(pipe: 'iris', textures: true, force: false)
         model = Sketchup.active_model
         return say('활성 모델이 없습니다.') unless model
         return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
