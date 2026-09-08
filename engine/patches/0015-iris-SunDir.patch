@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 21:51:57 +0900
+Subject: [PATCH 15/15] =?UTF-8?q?iris:=20=ED=95=98=EB=8A=98=EC=9D=98=20Sun?=
+ =?UTF-8?q?Dir=20=EC=9D=80=20=EB=B9=9B=EC=9D=B4=20=EB=82=98=EC=95=84?=
+ =?UTF-8?q?=EA=B0=80=EB=8A=94=20=EB=B0=A9=ED=96=A5=20-=20=EB=B6=80?=
+ =?UTF-8?q?=ED=98=B8=20=EB=92=A4=EC=A7=91=EA=B3=A0=20=EB=A1=9C=EA=B7=B8=20?=
+ =?UTF-8?q?=EC=B6=94=EA=B0=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp                       |  6 +++++-
+ Rtxpt/Lighting/Distant/SampleProceduralSky.cpp | 18 +++++++++++++++++-
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 2d1d392..78ad86f 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -297,7 +297,11 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     log::info("IRIS: 조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu · Specular 지정 %zu",
+               stats.pointLights, stats.spotLights, stats.lightLumens,
+               stats.emissiveMaterials, stats.specularOverrides);
+-    log::info("IRIS: 태양 %s (%.0f lux)", stats.hasSun ? "적용" : "없음", stats.sunIrradiance);
++    if (stats.hasSun && stats.sunIrradiance <= 0.0f)
++        log::info("IRIS: 태양 — 하늘이 소유 (고도 %.1f도, 방향 %.3f %.3f %.3f)",
++                  stats.sunElevationDeg, stats.sunDirYUp[0], stats.sunDirYUp[1], stats.sunDirYUp[2]);
++    else
++        log::info("IRIS: 태양 %s (%.0f lux)", stats.hasSun ? "적용" : "없음", stats.sunIrradiance);
+     if (stats.meshesReused)
+         log::info("IRIS: 델타 — 메시 재사용 %zu개 (정점 업로드·BLAS 재구축 없음)", stats.meshesReused);
+ 
+diff --git a/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp b/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
+index c7d161a..47baf03 100644
+--- a/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
++++ b/Rtxpt/Lighting/Distant/SampleProceduralSky.cpp
+@@ -11,6 +11,7 @@
+ #include "SampleProceduralSky.h"
+ 
+ #include "iris/bridge/IrisBridge.h"
++#include <donut/core/log.h>
+ #include <donut/engine/ShaderFactory.h>
+ #include <donut/engine/FramebufferFactory.h>
+ #include <donut/engine/CommonRenderPasses.h>
+@@ -155,10 +156,25 @@ bool SampleProceduralSky::Update( double sceneTime, ProceduralSkyConstants & out
+     //
+     // **그리고 태양은 하나여야 합니다.** 하늘에 태양이 있는데 방향광을 또
+     // 더하면 그림자가 둘이 됩니다 — 실외 모델에서 실제로 그렇게 나왔습니다.
++    //
++    // ⚠ 부호: 이 하늘의 SunDir 은 **빛이 나아가는 방향**입니다.
++    //   호스트가 주는 것은 태양을 향하는 방향이므로 뒤집습니다.
++    //   (태양을 향하는 벡터를 그대로 넣었더니 화면이 밤이 됐습니다. 기본
++    //    midday 프리셋의 sunDir 도 Y(위) 성분이 음수입니다.)
+     {
+         float hostSun[3];
+         if (iris::bridge::IrisBridge::Get().GetSunDirection(hostSun))
+-            sunDir = normalize(float3(hostSun[0], hostSun[1], hostSun[2]));
++        {
++            const float3 travel = normalize(float3(-hostSun[0], -hostSun[1], -hostSun[2]));
++            static float3 s_lastLogged = float3(0, 0, 0);
++            if (length(travel - s_lastLogged) > 1e-4f)
++            {
++                s_lastLogged = travel;
++                donut::log::info("IRIS 하늘: 기본 sunDir (%.3f %.3f %.3f) -> 호스트 (%.3f %.3f %.3f)",
++                                 sunDir.x, sunDir.y, sunDir.z, travel.x, travel.y, travel.z);
++            }
++            sunDir = travel;
++        }
+     }
+     outConstants.SunDir = sunDir;
+ 
