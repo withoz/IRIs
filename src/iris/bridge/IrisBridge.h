@@ -1,0 +1,77 @@
+// IRIS — 라이브 링크 수명 관리
+//
+// 파이프 서버를 **프로세스 수명 동안** 들고 있습니다. 씬(IrisScene)은 로드할
+// 때마다 새로 만들어지므로 거기에 서버를 두면 씬이 바뀔 때마다 연결이 끊깁니다.
+//
+// 스레드 경계가 여기입니다.
+//   수신 스레드 : 파이프에서 .irisb 바이트를 받아 여기에 쌓는다
+//   렌더 스레드 : HasPendingScene() 으로 확인하고 TakePendingScene() 으로 가져간다
+//
+// 받은 바이트를 그대로 넘기고 **파싱과 씬 구축은 렌더 스레드에서** 합니다.
+// nvrhi 자원 생성이 렌더 스레드 전용이기 때문입니다. 파싱만 수신 스레드로
+// 옮기는 것은 나중에 볼 최적화이고, 실측상 파싱은 전체의 일부입니다
+// (docs/07-프로토콜-수신부-설계.md 5.2).
+
+#pragma once
+
+#include "iris/protocol/PipeServer.h"
+#include "iris/protocol/Wire.h"
+
+#include <cstdint>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace iris::bridge
+{
+    // 렌더러가 라이브 씬을 가리킬 때 쓰는 이름. 실제 파일이 아닙니다 —
+    // 엔진의 씬 전환 경로를 그대로 재사용하기 위한 가상 이름입니다.
+    inline constexpr const char* kLiveSceneName = "IRIS live";
+
+    class IrisBridge
+    {
+    public:
+        static IrisBridge& Get();
+
+        bool Start(const std::string& pipeName = "iris");
+        void Stop();
+        [[nodiscard]] bool IsRunning() const;
+
+        // --- 렌더 스레드 ---
+        [[nodiscard]] bool                 HasPendingScene() const;
+        [[nodiscard]] std::vector<uint8_t> TakePendingScene();
+
+        // 텍스처 파일이 놓인 디렉터리. 호스트가 Hello 의 texture_base 로 알려줍니다.
+        //
+        // 라이브 링크에서는 씬이 파일로 존재하지 않으므로 "씬 파일 옆"이라는
+        // 기준을 쓸 수 없습니다. 텍스처는 같은 머신의 파일로 두고 경로만
+        // 주고받습니다 — 05번 문서가 열어 둔 항목이며, 같은 머신이라 이쪽이
+        // 단순합니다. 원격 구성이 생기면 바이트 전송을 다시 봅니다.
+        [[nodiscard]] std::string TextureBase() const;
+
+        // --- 진단 ---
+        [[nodiscard]] protocol::PipeServerStats Stats() const;
+        [[nodiscard]] std::string               LastError() const;
+        [[nodiscard]] uint64_t                  ScenesApplied() const;
+
+        void SetLog(std::function<void(const std::string&)> log);
+
+        // 씬을 실제로 화면에 반영했을 때 렌더 쪽에서 알려 줍니다. 통계용입니다.
+        void NotifyApplied();
+
+    private:
+        IrisBridge() = default;
+        ~IrisBridge();
+        IrisBridge(const IrisBridge&)            = delete;
+        IrisBridge& operator=(const IrisBridge&) = delete;
+
+        mutable std::mutex                      m_mutex;
+        std::vector<uint8_t>                    m_pending;
+        std::string                             m_textureBase;
+        std::function<void(const std::string&)> m_log;
+        protocol::PipeServer                    m_server;
+        uint64_t                                m_applied = 0;
+        uint64_t                                m_dropped = 0;
+    };
+}

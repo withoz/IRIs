@@ -1,0 +1,187 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Tue, 8 Sep 2026 13:52:35 +0900
+Subject: [PATCH 3/3] =?UTF-8?q?iris:=20=EB=9D=BC=EC=9D=B4=EB=B8=8C=20?=
+ =?UTF-8?q?=EB=A7=81=ED=81=AC=20=ED=9B=85=20(Phase=201-2c)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+실행 중인 렌더러가 파이프로 받은 씬으로 갈아탄다.
+
+- Sample::Init      IrisBridge 를 띄우고 'IRIS live' 를 씬 목록에 넣는다.
+                    파이프 서버는 프로세스 수명 동안 살아야 하므로 씬이
+                    아니라 여기서 시작한다
+- Sample::Animate   대기 중인 씬이 있으면 SetCurrentScene(라이브, force)
+                    엔진의 씬 전환 경로를 그대로 쓴다 — SceneLoaded 가
+                    BLAS 재빌드·카메라·베이커를 전부 다시 돌린다
+- IrisScene         파일 대신 받은 바이트를 읽는다(ReadIrisbMemory).
+                    텍스처 기준 경로는 호스트가 Hello 로 알려준 곳을 쓴다 —
+                    라이브 씬은 파일로 존재하지 않아 '씬 파일 옆'을 쓸 수 없다
+
+실측: bistro 로 뜬 렌더러가 파이프로 골프존을 받아 교체.
+      읽기 29.1 ms (메모리, 파일 54 ms 대비) + 구축 649 ms.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp | 49 ++++++++++++++++++++++++++++++++++------
+ Rtxpt/Iris/IrisScene.h   |  4 +++-
+ Rtxpt/Sample.cpp         | 20 +++++++++++++++-
+ 3 files changed, 64 insertions(+), 9 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 06146ce..125af14 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "../SampleCommon/LocalConfig.h"
+ 
++#include "iris/bridge/IrisBridge.h"
+ #include "iris/bridge/SceneBuilder.h"
+ #include "iris/protocol/IrisbReader.h"
+ 
+@@ -64,14 +65,31 @@ namespace
+ bool IrisScene::LoadWithThreadPool(const std::filesystem::path& sceneFileName,
+                                    donut::engine::ThreadPool* threadPool)
+ {
+-    if (sceneFileName.extension() != ".irisb")
++    // 라이브 링크로 들어온 씬이 있으면 그것이 우선입니다. 파일이 아니라
++    // 파이프로 받은 바이트이므로 경로는 이름표일 뿐입니다.
++    const bool isLive = sceneFileName.filename().string() == iris::bridge::kLiveSceneName;
++    std::vector<uint8_t> live;
++    if (isLive || iris::bridge::IrisBridge::Get().HasPendingScene())
++        live = iris::bridge::IrisBridge::Get().TakePendingScene();
++
++    if (live.empty() && sceneFileName.extension() != ".irisb")
++    {
++        if (isLive)
++        {
++            log::error("IRIS: 라이브 씬을 요청했지만 받은 데이터가 없습니다");
++            return false;
++        }
+         return ExtendedScene::LoadWithThreadPool(sceneFileName, threadPool);
++    }
+ 
+     // 예외가 여기를 빠져나가면 std::terminate -> abort(0xC0000409) 이고 이유가
+     // 남지 않습니다. .irisb 는 외부 입력이므로 반드시 막습니다.
+     try
+     {
+-        return LoadIrisb(sceneFileName);
++        const bool ok = LoadIrisb(sceneFileName, live);
++        if (ok && !live.empty())
++            iris::bridge::IrisBridge::Get().NotifyApplied();
++        return ok;
+     }
+     catch (const std::exception& e)
+     {
+@@ -87,7 +105,8 @@ bool IrisScene::LoadWithThreadPool(const std::filesystem::path& sceneFileName,
+     }
+ }
+ 
+-bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName)
++bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
++                          const std::vector<uint8_t>& bytes)
+ {
+     // 엔진 로그를 우리 추적 파일로도 흘려보냅니다. --captureSimple 로 돌리면
+     // stdout 이 비어 있고, 죽을 때는 버퍼가 날아가 원인이 남지 않습니다.
+@@ -122,12 +141,16 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName)
+         });
+     }
+ 
+-    Trace("=== LoadIrisb 시작: %s", sceneFileName.string().c_str());
++    const bool live = !bytes.empty();
++    Trace("=== LoadIrisb 시작: %s%s", sceneFileName.string().c_str(),
++          live ? "  (라이브 링크)" : "");
+ 
+     // --- 읽기 ---
+     iris::protocol::Scene src;
+     const auto t0 = std::chrono::steady_clock::now();
+-    const iris::protocol::ReadResult rr = iris::protocol::ReadIrisbFile(sceneFileName, src);
++    const iris::protocol::ReadResult rr =
++        live ? iris::protocol::ReadIrisbMemory(bytes.data(), bytes.size(), src)
++             : iris::protocol::ReadIrisbFile(sceneFileName, src);
+     const double readMs = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - t0).count();
+ 
+@@ -143,8 +166,20 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName)
+           readMs, src.definitions.size(), src.materials.size(), src.views.size(), src.blob.size());
+ 
+     // --- 씬 그래프 구축 ---
+-    iris::bridge::SceneBuilder builder(m_SceneTypeFactory, m_TextureCache,
+-                                       sceneFileName.parent_path());
++    // 텍스처 기준 경로. 파일에서 연 씬은 그 파일 옆이고, 라이브 링크는 호스트가
++    // Hello 로 알려준 곳입니다 (라이브 씬은 파일로 존재하지 않습니다).
++    std::filesystem::path texBase = sceneFileName.parent_path();
++    if (live)
++    {
++        const std::string base = iris::bridge::IrisBridge::Get().TextureBase();
++        if (!base.empty())
++            texBase = std::filesystem::path(
++                std::u8string(reinterpret_cast<const char8_t*>(base.c_str()), base.size()));
++        else
++            log::warning("IRIS: 호스트가 texture_base 를 주지 않아 텍스처를 찾지 못할 수 있습니다");
++    }
++
++    iris::bridge::SceneBuilder builder(m_SceneTypeFactory, m_TextureCache, texBase);
+     iris::bridge::BuildStats stats;
+     builder.SetTrace([](const std::string& s) { Trace("  [빌드] %s", s.c_str()); });
+ 
+diff --git a/Rtxpt/Iris/IrisScene.h b/Rtxpt/Iris/IrisScene.h
+index 92abf41..94e6062 100644
+--- a/Rtxpt/Iris/IrisScene.h
++++ b/Rtxpt/Iris/IrisScene.h
+@@ -24,5 +24,7 @@ public:
+                             donut::engine::ThreadPool* threadPool) override;
+ 
+ private:
+-    bool LoadIrisb(const std::filesystem::path& sceneFileName);
++    // bytes 가 비어 있지 않으면 파일 대신 그것을 씁니다 (라이브 링크 경로).
++    bool LoadIrisb(const std::filesystem::path& sceneFileName,
++                   const std::vector<uint8_t>& bytes);
+ };
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 4291f25..70a1738 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -10,7 +10,8 @@
+ 
+ #include "Sample.h"
+ 
+-#include "Iris/IrisScene.h"   // IRIS: .irisb 씬 로딩
++#include "Iris/IrisScene.h"       // IRIS: .irisb 씬 로딩
++#include "iris/bridge/IrisBridge.h" // IRIS: 라이브 링크
+ 
+ #include <donut/engine/FramebufferFactory.h>
+ #include <donut/engine/ShaderFactory.h>
+@@ -396,6 +397,17 @@ void Sample::Init(const std::string& preferredScene,
+             m_sceneFilesAvailable.push_back( fileName );
+     }
+ 
++    // IRIS: 라이브 링크 씬을 목록에 넣는다. 실제 파일이 아니라 파이프로 받은
++    // 바이트를 가리키는 가상 이름이다.
++    m_sceneFilesAvailable.push_back(iris::bridge::kLiveSceneName);
++
++    // IRIS: 파이프 서버를 띄운다. 프로세스 수명 동안 살아 있어야 하므로
++    // 씬이 아니라 여기서 시작한다.
++    iris::bridge::IrisBridge::Get().SetLog([](const std::string& s) { log::info("IRIS 링크: %s", s.c_str()); });
++    if (!iris::bridge::IrisBridge::Get().Start())
++        log::warning("IRIS: 라이브 링크를 시작하지 못했습니다 — %s",
++                     iris::bridge::IrisBridge::Get().LastError().c_str());
++
+     std::string scene = FindPreferredScene(m_sceneFilesAvailable, preferredScene);
+ 
+     // Select initial scene
+@@ -770,6 +782,12 @@ bool Sample::MouseScrollUpdate(double xoffset, double yoffset)
+ 
+ void Sample::Animate(float fElapsedTimeSeconds)
+ {
++    // IRIS: 라이브 링크로 새 씬이 들어왔으면 여기서 갈아끼운다.
++    // 엔진의 씬 전환 경로를 그대로 쓴다 — IrisScene 이 파일 대신 받은 바이트를
++    // 읽는다. SceneLoaded 가 BLAS 재빌드·카메라·베이커를 전부 다시 돌린다.
++    if (iris::bridge::IrisBridge::Get().HasPendingScene())
++        SetCurrentScene(iris::bridge::kLiveSceneName, true);
++
+     if (m_ui.ActualFPSLimiter()>0)    // essential for stable video recording
+         fElapsedTimeSeconds = 1.0f / (float)m_ui.ActualFPSLimiter();
+ 

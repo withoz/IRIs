@@ -70,6 +70,8 @@ if(TARGET donut_engine)
     add_library(iris_bridge STATIC
         iris/bridge/SceneBuilder.h
         iris/bridge/SceneBuilder.cpp
+        iris/bridge/IrisBridge.h
+        iris/bridge/IrisBridge.cpp
     )
     target_include_directories(iris_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(iris_bridge PUBLIC iris_protocol donut_engine)
