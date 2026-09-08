@@ -338,20 +338,29 @@ module IRIS
         { 'off' => off, 'count' => arr.length }
       end
 
-      def write_binary(path, scene)
+      # .irisb 바이트를 **메모리에** 만든다. 라이브 링크(iris_link.rb)가 이것을
+      # 그대로 파이프로 보냅니다 — 파일을 거치지 않습니다.
+      #
+      # 반환: [바이트 문자열(BINARY), { json:, bin: }]
+      def pack_binary(scene)
         man, blob = split_binary(scene)
         json = JSON.generate(man).b
         pad  = (8 - (json.bytesize % 8)) % 8
         json << (' '.b * pad)
 
-        File.open(path, 'wb') do |f|
-          f.write(MAGIC)
-          f.write([FMT_VER, 0].pack('VV'))
-          f.write([json.bytesize, blob.bytesize].pack('Q<Q<'))
-          f.write(json)
-          f.write(blob)
-        end
-        { json: json.bytesize, bin: blob.bytesize }
+        out = +''.b
+        out << MAGIC
+        out << [FMT_VER, 0].pack('VV')
+        out << [json.bytesize, blob.bytesize].pack('Q<Q<')
+        out << json
+        out << blob
+        [out, { json: json.bytesize, bin: blob.bytesize }]
+      end
+
+      def write_binary(path, scene)
+        bytes, sizes = pack_binary(scene)
+        File.open(path, 'wb') { |f| f.write(bytes) }
+        sizes
       end
 
       # ------------------------------------------------------------ 캐시 제어
