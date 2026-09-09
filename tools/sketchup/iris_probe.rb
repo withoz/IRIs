@@ -103,9 +103,14 @@ module IRIS
         @cache = cache
       end
 
-      def onMaterialChange(_materials, _material) = @cache.invalidate_materials
-      def onMaterialRemoveAll(_materials)         = @cache.invalidate_materials
-      def onMaterialRemove(_materials, _material) = @cache.invalidate_materials
+      # **어느 재질이 바뀌었는지**를 버리지 않습니다.
+      #
+      # 이름을 흘리고 "재질이 바뀌었다"로만 넘기면 다음 추출이 텍스처를 전부
+      # 다시 뽑습니다 — 색 하나 바꾸는 데 13.9초였습니다(231장 재추출).
+      # 옵저버가 알려준 것을 그대로 들고 갑니다.
+      def onMaterialChange(_materials, material) = @cache.invalidate_material(material)
+      def onMaterialRemove(_materials, material) = @cache.invalidate_material(material)
+      def onMaterialRemoveAll(_materials)        = @cache.invalidate_all_materials
     end
 
     class DefCache
@@ -116,6 +121,9 @@ module IRIS
         @mat_model = nil
         @suspended = false
         @suppressed = { elements: 0, materials: 0 }
+        @materials_stale = false
+        @stale_all  = false   # 어느 것인지 모른다 -> 전부 다시 읽는다
+        @stale_mats = {}      # id => true
       end
 
       # 추출 중에는 무효화를 받지 않습니다.
@@ -180,6 +188,8 @@ module IRIS
         end
         @entries = {}
         detach_all rescue nil
+        # 다른 모델의 재질 id 를 들고 가면 엉뚱한 것을 지목합니다.
+        clear_materials_stale
         @model_key = key
       end
 
@@ -263,16 +273,43 @@ module IRIS
       #
       # 재질 조정은 라이브 링크에서 가장 흔한 작업입니다. 그때마다 전체
       # 재추출이 도는 것은 제품으로 성립하지 않습니다.
-      def invalidate_materials
+      def invalidate_material(mat)
         if @suspended
           @suppressed[:materials] += 1
           return
         end
         @materials_stale = true
+        return if @stale_all
+        id = ("mat_#{mat.entityID}" rescue nil)
+        # ||= 로 지연 생성합니다. 콘솔에서 프로브를 다시 로드하면 **이미 있던
+        # DefCache 인스턴스**가 그대로 살아 있어 initialize 가 다시 돌지
+        # 않습니다. 새로 넣은 ivar 는 nil 인 채로 남습니다.
+        id ? ((@stale_mats ||= {})[id] = true) : (@stale_all = true)
       end
 
+      # 어느 것인지 모를 때. 전부 다시 읽습니다.
+      def invalidate_all_materials
+        if @suspended
+          @suppressed[:materials] += 1
+          return
+        end
+        @materials_stale = true
+        @stale_all = true
+      end
+
+      # 예전 이름 — 부르는 곳이 남아 있을 수 있어 남겨 둡니다.
+      def invalidate_materials = invalidate_all_materials
+
+      # nil 이면 '전부'. 빈 해시면 '없음'.
+      def stale_material_ids = @stale_all ? nil : (@stale_mats || {})
+
       def materials_stale? = @materials_stale ? true : false
-      def clear_materials_stale = (@materials_stale = false)
+
+      def clear_materials_stale
+        @materials_stale = false
+        @stale_all  = false
+        @stale_mats = {}
+      end
 
       def attach(defn)
         return if @observers.key?(defn.entityID)
@@ -385,15 +422,17 @@ module IRIS
           # 갈아 끼웁니다. 지오메트리는 건드리지 않습니다.
           @refresh_materials = @cache.materials_stale?
           if @refresh_materials
+            # 옵저버가 알려준 **그 재질만** 다시 읽습니다. nil 이면 전부입니다.
+            @stale_mat_ids = @cache.stale_material_ids
             @mat_index = model.materials.each_with_object({}) do |m, h|
               h["mat_#{m.entityID}"] = m
             end
-            @stats['materials_refreshed'] = 1
           end
         else
           @cache = nil
           # 캐시가 없으면 어차피 전부 새로 뽑습니다.
           @refresh_materials = false
+          @stale_mat_ids = nil
         end
 
         @caps = probe_capabilities(model)
@@ -987,7 +1026,7 @@ module IRIS
           # 다시 읽습니다 — **지오메트리는 다시 뽑지 않습니다.**
           hit[:mats].each do |mid, rec|
             next if @materials.key?(mid)
-            live = @refresh_materials ? @mat_index[mid] : nil
+            live = stale_material?(mid) ? @mat_index[mid] : nil
             live ? register_material(live) : (@materials[mid] = rec)
           end
           @stats['vertices']  += hit[:verts]
@@ -1161,9 +1200,22 @@ module IRIS
         nil
       end
 
+      # 이 재질을 다시 읽어야 하는가.
+      #
+      # @stale_mat_ids 가 nil 이면 '어느 것인지 모른다' 이므로 전부입니다
+      # (onMaterialRemoveAll, 또는 entityID 를 못 읽은 경우).
+      def stale_material?(mid)
+        return false unless @refresh_materials
+        @stale_mat_ids.nil? || @stale_mat_ids.key?(mid)
+      end
+
       def register_material(mat)
         key = "mat_#{mat.entityID}"
         return key if @materials.key?(key)
+
+        # 지목된 재질을 실제로 다시 읽은 횟수. 여기서 세야 루트에 칠해진
+        # 재질까지 셉니다.
+        @stats['materials_refreshed'] += 1 if stale_material?(key)
 
         c   = (mat.color rescue nil)
         tex = (mat.texture rescue nil)
@@ -1324,7 +1376,7 @@ module IRIS
         rel  = "#{@texture_rel}/#{file}"
         # 재질이 바뀌었으면 이미지 자체가 바뀌었을 수 있습니다. 파일이 있다고
         # 그냥 쓰면 낡은 그림이 남습니다.
-        if @refresh_materials && File.exist?(path)
+        if stale_material?(key) && File.exist?(path)
           File.delete(path) rescue nil
         end
         if File.exist?(path)
@@ -1453,7 +1505,9 @@ module IRIS
         end
         if @refresh_materials
           # 재질만 바뀐 경우입니다. 지오메트리를 다시 뽑지 않은 것이 요점입니다.
-          w << '     재질 갱신     : O (지오메트리는 재추출하지 않음)'
+          scope = @stale_mat_ids ? "#{@stale_mat_ids.size}종 지목" : '전체 (어느 것인지 모름)'
+          w << "     재질 갱신     : #{@stats['materials_refreshed']}개 다시 읽음 / #{scope}"
+          w << '                     (지오메트리는 재추출하지 않음)'
         end
         if (@stats['kids_reused'].to_i + @stats['kids_rescanned'].to_i) > 0
           # 자식을 되쓴 정의는 **면을 아예 훑지 않았습니다.** 이 모델에서
@@ -1576,6 +1630,7 @@ module IRIS
           'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
           'defs_extracted' => 0, 'defs_cached' => 0, 'lights_defs' => 0,
           'kids_reused' => 0, 'kids_rescanned' => 0, 'back_faces' => 0,
+          'materials_refreshed' => 0,
         }
         @definitions    = {}
         @materials      = {}
