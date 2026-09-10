@@ -451,13 +451,25 @@ module IRIS
         # 그대로이므로). 그것도 보내야 할 변경입니다 — 안 그러면 재질 조정이
         # 자동 모드에서 화면에 반영되지 않습니다.
         mats = cache.respond_to?(:materials_stale?) && cache.materials_stale?
-        return if dirty.empty? && !mats
+
+        # 3) 태양. 시각·날짜·위치를 바꾸면 **정의는 하나도 안 바뀝니다** —
+        #    옵저버가 깨지 않으므로 이대로 두면 자동 모드가 영영 못 봅니다.
+        #    ShadowInfoObserver 대신 값을 직접 견줍니다. 매 틱 속성 몇 개를
+        #    읽는 것뿐이라 싸고, 다른 확장이 바꿔도 잡힙니다.
+        sun = sun_changed?
+        return if dirty.empty? && !mats && !sun
 
         @auto_busy = true
         begin
           # 이 줄도 매번 찍으면 시끄럽습니다. 실제로 보낸 경우만 sync 가 알립니다.
           if @skipped.to_i.zero?
-            say(dirty.empty? ? '재질 변경 감지' : "변경 감지: 정의 #{dirty.size}개")
+            # 무엇이 바뀌어서 깨어났는지 그대로 말합니다. 셋을 뭉뚱그리면
+            # 태양을 옮겼는데 "재질 변경 감지"가 뜹니다.
+            what = []
+            what << "정의 #{dirty.size}개" unless dirty.empty?
+            what << '재질' if mats
+            what << '태양' if sun
+            say "변경 감지: #{what.join(' · ')}"
           end
           sync(pipe: @auto_pipe)
         ensure
@@ -469,6 +481,32 @@ module IRIS
       #
       # 역슬래시를 소스에 직접 쓰지 않고 문자 코드(92)로 만듭니다.
       # 편집 도구를 거치며 개수가 어긋나 실제로 한 번 깨진 적이 있습니다.
+      # 태양 설정이 바뀌었는가.
+      #
+      # 그림자 시각을 옮기면 지오메트리도 재질도 안 바뀝니다. 우리가 보내는
+      # 매니페스트에는 sun 이 들어 있으므로 **보내기만 하면** 반영되는데,
+      # 자동 모드가 깨어날 이유가 없어서 안 보냈습니다.
+      #
+      # 견주는 값은 방향·그림자 켜짐·시각입니다. SunDirection 하나로도
+      # 대부분 잡히지만, 그림자를 껐다 켜는 것은 방향을 바꾸지 않으므로
+      # 따로 봅니다.
+      def sun_changed?
+        model = Sketchup.active_model
+        return false unless model
+        si = model.shadow_info
+        return false unless si
+        d = (si['SunDirection'] rescue nil)
+        sig = [d ? [d.x.to_f.round(6), d.y.to_f.round(6), d.z.to_f.round(6)] : nil,
+               (si['DisplayShadows'] rescue nil),
+               (si['ShadowTime'].to_s rescue nil),
+               (si['UseSunForAllShading'] rescue nil)]
+        changed = @last_sun_sig && @last_sun_sig != sig
+        @last_sun_sig = sig
+        changed ? true : false
+      rescue StandardError
+        false
+      end
+
       # 렌더러 화면 크기. HelloAck 로 옵니다.
       def remember_display(ack)
         w = ack['display_w'].to_i
