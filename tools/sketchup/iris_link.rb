@@ -63,11 +63,13 @@ module IRIS
       #
       # 예외는 out/sketchup/sync_error.txt 에 남깁니다. SketchUp 콘솔의 예외는
       # 화면 밖의 사람에게 전달되지 않기 때문입니다.
-      #   sun_only — 태양만 바뀌었다고 **부르는 쪽이 보장**할 때. 트리를
-      #              다시 훑지 않고 지난 씬의 태양만 갈아 끼웁니다.
-      def sync(pipe: 'iris', textures: true, force: false, full: false, sun_only: false)
+      #   reuse  — [:sun, :materials] 처럼, **지오메트리는 안 바뀌었다고
+      #            부르는 쪽이 보장**할 때. 트리를 다시 훑지 않고 지난 씬의
+      #            해당 부분만 갈아 끼웁니다. 보장 없이 쓰면 편집이 조용히
+      #            안 나갑니다 — 이 인자는 tick 이 확인한 뒤에만 넘깁니다.
+      def sync(pipe: 'iris', textures: true, force: false, full: false, reuse: nil)
         sync_inner(pipe: pipe, textures: textures, force: force, full: full,
-                   sun_only: sun_only)
+                   reuse: reuse)
       rescue StandardError, ScriptError => e
         log_failure(e)
         raise
@@ -94,7 +96,7 @@ module IRIS
       end
 
       def sync_inner(pipe: 'iris', textures: true, force: false, full: false,
-                     sun_only: false)
+                     reuse: nil)
         model = Sketchup.active_model
         return say('활성 모델이 없습니다.') unless model
         return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
@@ -118,10 +120,20 @@ module IRIS
         log_line("===== sync force=#{force} full=#{full} =====")
         t_extract0 = Time.now
         gc0 = gc_snapshot
-        # 태양만 바뀌었으면 트리를 다시 훑지 않습니다. 순회가 46~476 ms 인데
-        # SketchUp 자신의 변동이라 줄일 수 없습니다 — 대신 묻지 않습니다.
-        reused = sun_only && IRIS::Probe.respond_to?(:refresh_sun) &&
-                 IRIS::Probe.last_scene && IRIS::Probe.refresh_sun(model)
+        # 지오메트리가 안 바뀌었으면 트리를 다시 훑지 않습니다. 순회가
+        # 46~476 ms 인데 SketchUp 자신의 변동이라 줄일 수 없습니다 —
+        # 대신 묻지 않습니다.
+        reused = false
+        if reuse && !reuse.empty? && IRIS::Probe.last_scene
+          reused = true
+          reuse.each do |what|
+            r = case what
+                when :sun       then IRIS::Probe.refresh_sun(model)
+                when :materials then IRIS::Probe.refresh_materials(model)
+                end
+            reused &&= !r.nil?
+          end
+        end
         IRIS::Probe.run(dump: false, textures: textures, cache: true) unless reused
         @gc = gc_delta(gc0, gc_snapshot)
         scene = IRIS::Probe.last_scene
@@ -207,7 +219,7 @@ module IRIS
         say ''
         say format('추출 %7.1f ms   삼각형 %s · 인스턴스 %s%s',
                    extract_ms, comma(st['triangles'].to_i), comma(st['instances'].to_i),
-                   reused ? '   (태양만 — 트리를 다시 안 훑음)' : '')
+                   reused ? "   (#{reuse.join('·')}만 — 트리를 다시 안 훑음)" : '')
         # **구간마다 따로 잽니다.**
         #
         # 추출만 쟀더니 GC 2 ms 가 나와 "GC 가 아니다"로 접었습니다. 그런데
@@ -537,10 +549,12 @@ module IRIS
             what << '태양' if sun
             say "변경 감지: #{what.join(' · ')}"
           end
-          # 태양만 바뀌었다는 것은 **여기서 이미 확인했습니다** — 무효화된
-          # 정의도 없고 재질 표시도 없습니다. 그 보장이 있어야 트리를 건너뛸
-          # 수 있습니다.
-          sync(pipe: @auto_pipe, sun_only: (dirty.empty? && !mats && sun))
+          # **여기서 확인한 보장만 넘깁니다.** 무효화된 정의가 하나라도
+          # 있으면 지오메트리가 바뀐 것이므로 전체 순회로 갑니다.
+          modes = []
+          modes << :materials if mats
+          modes << :sun       if sun
+          sync(pipe: @auto_pipe, reuse: (dirty.empty? ? modes : nil))
         ensure
           @auto_busy = false
         end

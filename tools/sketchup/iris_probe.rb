@@ -719,6 +719,48 @@ module IRIS
         @scene
       end
 
+      # **재질만 바뀌었을 때도 트리를 다시 훑지 않습니다.**
+      #
+      # 태양과 같은 이유입니다. 재질의 **속성**이 바뀌어도 지오메트리·배치·
+      # 계층은 그대로입니다. 면에 다른 재질을 칠한 것은 엔티티 변경이라
+      # EntitiesObserver 가 그 정의를 무효화하므로 이 길로 오지 않습니다.
+      #
+      # 순회는 인스턴스 6,444개 x 속성 7개 = 약 45,000번의 SketchUp API
+      # 호출입니다. 바닥값이 46 ms 이고 SketchUp 변동으로 250 ms 까지
+      # 튑니다(실측). 그게 통째로 빠집니다.
+      #
+      # ⚠ 부르는 쪽이 **무효화된 정의가 하나도 없음을 확인했을 때만** 써야
+      #   합니다(Link#tick 의 dirty.empty?). 아니면 편집이 조용히 안 나갑니다.
+      def refresh_materials(model)
+        return nil unless @scene && @materials && @cache
+        list = @scene['materials']
+        return nil unless list.is_a?(Array)
+
+        ids = @cache.stale_material_ids          # nil 이면 '어느 것인지 모름 = 전부'
+        @refresh_materials = true
+        @stale_mat_ids     = ids
+        @stats['materials_refreshed'] = 0
+        index = model.materials.each_with_object({}) { |m, h| h["mat_#{m.entityID}"] = m }
+
+        list.each_with_index do |rec, i|
+          mid = rec && rec['id']
+          next unless mid
+          next unless ids.nil? || ids.key?(mid)
+          live = index[mid]
+          next unless live
+          # register_material 은 이미 있으면 그냥 돌아옵니다. 지우고 다시 읽습니다.
+          @materials.delete(mid)
+          register_material(live)                # 텍스처도 지목된 것만 다시 뽑습니다
+          list[i] = @materials[mid]
+        end
+
+        @cache.clear_materials_stale
+        @refresh_materials = false
+        @stale_mat_ids     = nil
+        @run_phase = { walk: 0.0, reused: true }
+        @scene
+      end
+
       def timed(key)
         t = Time.now
         v = yield
