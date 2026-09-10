@@ -190,6 +190,7 @@ module IRIS
         detach_all rescue nil
         # 다른 모델의 재질 id 를 들고 가면 엉뚱한 것을 지목합니다.
         clear_materials_stale
+        forget_materials
         @model_key = key
       end
 
@@ -310,6 +311,25 @@ module IRIS
         @stale_all  = false
         @stale_mats = {}
       end
+
+      # 다시 읽은 재질 레코드는 **캐시 항목 밖에** 들고 있습니다.
+      #
+      # 캐시 항목의 mats 는 그 정의를 추출하던 시점의 레코드입니다. 재질을
+      # 다시 읽고 표시를 지우고 나면, 다음 실행이 그 낡은 레코드를 되살립니다 —
+      # **색이 조용히 되돌아갑니다.** 오류도 없고 시간도 빠르므로 알아채기
+      # 어렵습니다. 벤치는 단계마다 색을 또 바꿔서 이걸 못 잡았습니다.
+      def remember_material(mid, rec)
+        (@mat_records ||= {})[mid] = [CACHE_SCHEMA, rec]
+      end
+
+      # 판이 다르면 버립니다 — 레코드에 필드가 늘면(예: Enscape PBR) 옛것이
+      # 조용히 되살아납니다. @entries 와 같은 이유입니다.
+      def material_record(mid)
+        e = (@mat_records || {})[mid]
+        e && e[0] == CACHE_SCHEMA ? e[1] : nil
+      end
+
+      def forget_materials = (@mat_records = {})
 
       def attach(defn)
         return if @observers.key?(defn.entityID)
@@ -1027,7 +1047,9 @@ module IRIS
           hit[:mats].each do |mid, rec|
             next if @materials.key?(mid)
             live = stale_material?(mid) ? @mat_index[mid] : nil
-            live ? register_material(live) : (@materials[mid] = rec)
+            # 캐시 항목의 rec 은 추출 시점의 것입니다. 그 뒤에 다시 읽은 것이
+            # 있으면 그쪽이 최신입니다.
+            live ? register_material(live) : (@materials[mid] = @cache&.material_record(mid) || rec)
           end
           @stats['vertices']  += hit[:verts]
           @stats['triangles'] += hit[:tris]
@@ -1250,6 +1272,10 @@ module IRIS
           @enscape_errors = (@enscape_errors || 0) + 1
           @enscape_last_error ||= e.message
         end
+
+        # 이 실행에서 살아 있는 재질로부터 만든 레코드입니다. 캐시 항목이
+        # 들고 있는 옛 레코드보다 항상 새것이므로 남겨 둡니다.
+        @cache&.remember_material(key, @materials[key])
 
         key
       end

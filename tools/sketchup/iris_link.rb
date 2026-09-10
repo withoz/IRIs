@@ -111,6 +111,7 @@ module IRIS
         end
         @model_key = key
 
+        log_line("===== sync force=#{force} full=#{full} =====")
         t_extract0 = Time.now
         IRIS::Probe.run(dump: false, textures: textures, cache: true)
         scene = IRIS::Probe.last_scene
@@ -168,7 +169,11 @@ module IRIS
         ok, bytes, sizes, pack_ms = transmit(pipe, scene, full: full)
         send_ms = (Time.now - t_send0) * 1000.0 - pack_ms
         @last_sig = sig if ok
-        return false unless bytes
+        unless bytes
+          say '전송하지 못했습니다 — 렌더러(Rtxpt.exe)가 떠 있는지 보십시오.'
+          log_timing(extract_ms, 0.0, send_ms, 0, scene['stats'] || {}, ok: false)
+          return false
+        end
 
         st = scene['stats'] || {}
         say ''
@@ -218,17 +223,17 @@ module IRIS
       # 콘솔에만 찍으면 나중에 "무엇이 얼마나 빨라졌는가"를 말할 수 없습니다.
       # 델타(5단계)는 정확히 그 질문에 답해야 하는 작업이므로, 고치기 전의
       # 숫자가 남아 있어야 합니다.
-      def log_timing(extract_ms, pack_ms, send_ms, bytes, st)
+      def log_timing(extract_ms, pack_ms, send_ms, bytes, st, ok: true)
         dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
         require 'fileutils'
         FileUtils.mkdir_p(dir)
         path = File.join(dir, 'sync_timing.csv')
         head = !File.exist?(path)
         File.open(path, 'a:UTF-8') do |f|
-          f.puts('time,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,geom_sent,geom_skipped,session,prev_session,held_gen,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts('time,ok,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,geom_sent,geom_skipped,session,prev_session,held_gen,triangles,instances,defs_extracted,defs_cached') if head
           ph = @phase || {}
           pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
-          f.puts([Time.now.strftime('%H:%M:%S'),
+          f.puts([Time.now.strftime('%H:%M:%S'), (ok ? 'ok' : 'FAIL'),
                   format('%.1f', extract_ms), format('%.1f', pack_ms),
                   format('%.1f', pp[:blob_ms].to_f), format('%.1f', pp[:json_ms].to_f),
                   format('%.1f', pp[:join_ms].to_f),
@@ -688,7 +693,29 @@ module IRIS
       def say(line)
         puts "[IRIS 링크] #{line}"
         @bench_log << line.to_s if @bench_log
+        log_line(line)
         nil
+      end
+
+      # **콘솔은 밖에서 읽을 수 없습니다.**
+      #
+      # "파이프를 열지 못했습니다"는 콘솔에만 찍혔고 파일에는 아무것도 남지
+      # 않았습니다. 그래서 "왜 아무 일도 없었는가"를 물을 방법이 없었고,
+      # 실제로 그것 때문에 두 번 헛돌았습니다. 전부 남깁니다.
+      def log_line(line)
+        path = File.join(out_dir, 'sync_log.txt')
+        # 무한정 쌓이지 않게 가끔 비웁니다.
+        File.delete(path) if File.exist?(path) && File.size(path) > 262_144
+        File.open(path, 'a:UTF-8') { |f| f.puts "#{Time.now.strftime('%H:%M:%S')}  #{line}" }
+      rescue StandardError
+        nil
+      end
+
+      def out_dir
+        d = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
+        require 'fileutils'
+        FileUtils.mkdir_p(d)
+        d
       end
     end
   end

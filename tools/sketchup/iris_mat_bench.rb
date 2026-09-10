@@ -97,6 +97,19 @@ module IRIS
         say format('    바꾼 뒤 매니페스트 색(선형) %s', fmt3(after))
         say ''
 
+        # 바꾼 색이 **다음 실행까지 남는가**.
+        #
+        # 표시를 지우고 나면 캐시 항목이 들고 있던 옛 레코드가 되살아나
+        # 색이 조용히 되돌아갈 수 있습니다. 단계마다 색을 또 바꾸면 이걸
+        # 못 잡습니다 — 변경 없이 한 번 더 돌려서 봅니다.
+        say '[4-b] 변경 없이 한 번 더 — 바꾼 색이 남아 있는가'
+        ms2b, s2b = timed_run
+        kept = color_of(s2b, key)
+        held = kept && after && same3(kept, after)
+        say format('    %9.1f ms · 색 %s  %s', ms2b, fmt3(kept),
+                   held ? '<- 남아 있습니다. 통과.' : '<- ** 되돌아갔습니다. 실패. **')
+        say ''
+
         model.start_operation('IRIS mat bench restore', true)
         target.color = orig
         model.commit_operation
@@ -121,6 +134,8 @@ module IRIS
                              '** 색이 그대로입니다. 재질을 다시 안 읽었습니다. 실패. **')
         say format('  텍스처  : %d장 다시 뽑음 (1장 이하여야 합니다)', s2[:tex_new])
         say format('  옵저버  : %s', fired ? 'Ruby 변경에도 깨어남' : 'Ruby 변경으로는 안 깨어남 (UI 는 별도 확인)')
+        say format('  색 유지 : %s', held ? '다음 실행에도 남습니다. 통과.' :
+                                             '** 다음 실행에서 되돌아갑니다. 실패. **')
         say ''
         if s2[:new].zero? && changed
           say '  두 조건이 같이 성립해야 의미가 있습니다 —'
