@@ -94,6 +94,13 @@ namespace iris::bridge
         void RequestFullResync();
         [[nodiscard]] bool TakeFullResyncRequest();
 
+        // 버린 씬이 정점을 싣고 있었는가. 헤더의 blobLen 만 봅니다.
+        //
+        // 지오메트리 0 인 델타를 버리는 것은 아무것도 잃지 않습니다 —
+        // 메시 캐시에 아무것도 더하지 않았으니까요. 그것까지 전체 재전송을
+        // 부르면 태양 슬라이더를 끄는 동안 111 MB 가 몇 번씩 오갑니다.
+        [[nodiscard]] static bool CarriesGeometry(const std::vector<uint8_t>& blob);
+
         // **하늘이 태양을 소유합니다.**
         //
         // 환경맵(HDRI)에는 태양이 구워져 있습니다. 거기에 우리 방향광을 더하면

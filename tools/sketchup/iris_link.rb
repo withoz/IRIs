@@ -437,6 +437,10 @@ module IRIS
       # ---------------------------------------------------------------- 내부
 
       def tick
+        # **틱이 실제로 도는가.** 로그는 뭔가 보낼 때만 남으므로, 조용한
+        # 것이 "안 돈다"인지 "돌았는데 바뀐 게 없다"인지 구별되지 않습니다.
+        # 세어 두면 diag 한 번으로 갈립니다.
+        @ticks = @ticks.to_i + 1
         return if @auto_busy
 
         # 1) 카메라부터. 시점을 돌리는 것이 편집보다 훨씬 잦고, 씬을 다시
@@ -481,6 +485,46 @@ module IRIS
       #
       # 역슬래시를 소스에 직접 쓰지 않고 문자 코드(92)로 만듭니다.
       # 편집 도구를 거치며 개수가 어긋나 실제로 한 번 깨진 적이 있습니다.
+      # **자동 모드가 왜 조용한가.**
+      #
+      # 로그는 보낼 때만 남습니다. 아무 일도 안 일어나면 파일에 아무것도
+      # 없고, 그것만 보고는 틱이 안 도는 것인지 바뀐 게 없는 것인지 알 수
+      # 없습니다. 실제로 그 자리에서 막혔습니다.
+      #
+      #   IRIS::Link.diag        지금 상태를 파일에 남깁니다
+      #
+      # 두 번 부르십시오 — 사이에 그림자 시각을 옮기고. ticks 가 늘어야
+      # 타이머가 도는 것이고, 태양 서명이 달라져야 검사가 사는 것입니다.
+      def diag
+        model = Sketchup.active_model
+        si = model && model.shadow_info
+        d  = si && (si['SunDirection'] rescue nil)
+        lines = []
+        lines << ''
+        lines << '=' * 60
+        lines << "#{Time.now.strftime('%H:%M:%S')}  진단"
+        lines << '=' * 60
+        lines << "  자동 동기화 : #{auto? ? '켜짐' : '**꺼짐**'}"
+        lines << "  틱 횟수     : #{@ticks.to_i}"
+        lines << "  틱 진행 중  : #{@auto_busy.inspect}"
+        lines << "  연속 무변경 : #{@skipped.to_i}"
+        lines << "  파이프      : #{pipe_path(@auto_pipe || 'iris')}"
+        lines << "  마지막 오류 : #{@last_error || '없음'}"
+        cache = defined?(IRIS::Probe) ? IRIS::Probe.instance_variable_get(:@def_cache) : nil
+        lines << "  정의 캐시   : #{cache ? '있음' : '**없음 — tick 이 여기서 되돌아갑니다**'}"
+        if cache
+          st = (cache.status rescue {})
+          lines << "                항목 #{st[:entries]} / 무효 #{st[:dirty]}"
+          lines << "  재질 표시   : #{(cache.materials_stale? rescue '?')}"
+        end
+        lines << "  태양 현재   : #{d ? format('(%.4f, %.4f, %.4f)', d.x, d.y, d.z) : '(없음)'}"
+        lines << "              시각 #{(si['ShadowTime'].to_s rescue '?')}  그림자 #{(si['DisplayShadows'].inspect rescue '?')}"
+        lines << "  태양 기억   : #{@last_sun_sig.inspect}"
+        lines << "  sun_changed?: (부르면 기억이 갱신되므로 여기서는 안 부릅니다)"
+        lines.each { |l| puts l; log_line(l) }
+        nil
+      end
+
       # 태양 설정이 바뀌었는가.
       #
       # 그림자 시각을 옮기면 지오메트리도 재질도 안 바뀝니다. 우리가 보내는

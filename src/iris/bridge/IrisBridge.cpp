@@ -1,4 +1,5 @@
 #include "IrisBridge.h"
+#include "../protocol/IrisbReader.h"   // 헤더 상수(kMagic, kHeaderSize)
 
 #include <donut/engine/TextureCache.h>
 
@@ -173,11 +174,20 @@ namespace iris::bridge
                     // 그것을 참조하면 물체가 사라집니다 — 실제로 화면이 통째로
                     // 비었습니다.
                     //
-                    // 버리는 순간 전체 재전송을 예약합니다.
+                    // 버리는 순간 전체 재전송을 예약합니다 — **다만 버린
+                    // 씬이 지오메트리를 싣고 있었을 때만.**
+                    //
+                    // 지오메트리가 0 인 델타(태양·재질·배치만 바뀐 것)를
+                    // 버리는 것은 아무것도 잃지 않습니다. 메시 캐시는
+                    // 프로세스 수명이고 그 씬은 거기에 아무것도 더하지
+                    // 않았으니까요. 그런데도 전체를 요청하면 그림자 시각
+                    // 슬라이더를 끄는 동안 111 MB 가 몇 번씩 오갑니다 —
+                    // 실측으로 그렇게 됐습니다.
                     if (!m_pending.empty())
                     {
                         ++m_dropped;
-                        m_needFullResync = true;
+                        if (CarriesGeometry(m_pending))
+                            m_needFullResync = true;
                     }
                     m_pending     = std::move(blob);
                     m_lastHash    = hash;
@@ -366,6 +376,21 @@ namespace iris::bridge
 
 namespace iris::bridge
 {
+    // 이 .irisb 가 정점을 싣고 있는가.
+    //
+    // 헤더 32 바이트만 봅니다(IrisbReader.h): 매직 8 + 판 4 + 예약 4 +
+    // jsonLen 8 + blobLen 8. blobLen 이 0 이면 매니페스트뿐입니다.
+    bool IrisBridge::CarriesGeometry(const std::vector<uint8_t>& blob)
+    {
+        if (blob.size() < protocol::kHeaderSize)
+            return true;    // 모르면 안전한 쪽으로
+        if (std::memcmp(blob.data(), protocol::kMagic, sizeof(protocol::kMagic)) != 0)
+            return true;
+        uint64_t blobLen = 0;
+        std::memcpy(&blobLen, blob.data() + 24, sizeof(blobLen));
+        return blobLen > 0;
+    }
+
     void IrisBridge::SetDisplaySize(uint32_t width, uint32_t height)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
