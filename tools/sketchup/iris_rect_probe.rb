@@ -149,6 +149,25 @@ module IRIS
           return
         end
 
+        # **퇴화 검사를 먼저 합니다.**
+        #
+        # 실측에서 39종 중 38종이 Luminosity 가 정확히 같았습니다. 그런
+        # 자료에 회귀를 돌리면 남은 한 점이 기울기를 정하고, 이 모델에서는
+        # 그 값이 +1.096 이 나왔습니다 — "넓이에 비례한다 = 지금 방식이
+        # 맞다"로 읽힐 뻔했습니다. 통계는 옳게 계산됐고 결론만 틀립니다.
+        # 원표를 보고서야 알았습니다.
+        vals = pts.map { |_, v| v }.map { |v| v.round(6) }
+        uniq = vals.uniq
+        if uniq.size <= 2 && vals.size >= 5
+          top = uniq.max_by { |u| vals.count(u) }
+          say format('    ** Luminosity 가 사실상 한 값입니다 — %d개 중 %d개가 %s **',
+                     vals.size, vals.count(top), comma(top))
+          say '    같은 값이 반복되면 이것은 작성자가 정한 값이 아니라'
+          say '    **기본값**입니다. 넓이와의 상관은 의미가 없습니다 —'
+          say '    아래 기울기를 근거로 쓰지 마십시오.'
+          say ''
+        end
+
         # 로그-로그 기울기. 비례하면 1, 무관하면 0 근처입니다.
         lx = pts.map { |a, _| Math.log(a) }
         ly = pts.map { |_, v| Math.log([v, 1e-9].max) }
