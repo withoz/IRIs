@@ -119,10 +119,19 @@ namespace iris::bridge
             if (needFull)
                 say("지난 씬에 재사용할 메시가 없었습니다 — 전체 재전송을 요청합니다");
 
+            uint32_t dw = 0, dh = 0;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                dw = m_displayW;
+                dh = m_displayH;
+            }
+
             ack = "{\"protocol\":" + std::to_string(protocol::kProtocolVersion) +
                   ",\"accepted\":true,\"renderer\":\"IRIS\",\"session\":" +
                   std::to_string(protocol::ProcessSessionId()) +
-                  ",\"need_full\":" + (needFull ? "true" : "false") + "}";
+                  ",\"need_full\":" + (needFull ? "true" : "false") +
+                  ",\"display_w\":" + std::to_string(dw) +
+                  ",\"display_h\":" + std::to_string(dh) + "}";
             return true;
         };
 
@@ -357,6 +366,13 @@ namespace iris::bridge
 
 namespace iris::bridge
 {
+    void IrisBridge::SetDisplaySize(uint32_t width, uint32_t height)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_displayW = width;
+        m_displayH = height;
+    }
+
     void IrisBridge::RequestFullResync()
     {
         std::lock_guard<std::mutex> lock(m_mutex);

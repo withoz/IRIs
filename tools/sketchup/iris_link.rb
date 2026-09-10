@@ -469,6 +469,87 @@ module IRIS
       #
       # 역슬래시를 소스에 직접 쓰지 않고 문자 코드(92)로 만듭니다.
       # 편집 도구를 거치며 개수가 어긋나 실제로 한 번 깨진 적이 있습니다.
+      # 렌더러 화면 크기. HelloAck 로 옵니다.
+      def remember_display(ack)
+        w = ack['display_w'].to_i
+        h = ack['display_h'].to_i
+        return if w <= 0 || h <= 0
+        @display = [w, h]
+      end
+
+      def display_size = @display
+
+      # **구도를 맞춥니다.**
+      #
+      # 카메라를 그대로 옮겨도 두 화면은 같아지지 않습니다. 렌더러는 세로
+      # 화각만 맞추므로 창의 가로세로 비가 다르면 좌우로 더/덜 보입니다.
+      # 그림자 방향을 눈으로 비교하다 헛돌았던 것이 이 때문입니다 —
+      # 카메라가 조금만 달라도 시계 방향이 달라집니다.
+      #
+      # SketchUp 은 Camera#aspect_ratio 로 뷰포트를 고정 비율로 자르고
+      # 바깥을 회색으로 칠합니다. 렌더러 비율에 맞추면 **같은 화면**이 됩니다.
+      #
+      #   IRIS::Link.match_view        렌더러 비율에 맞추고 카메라를 보냅니다
+      #   IRIS::Link.match_view(off: true)   비율 고정을 풉니다
+      def match_view(pipe: 'iris', off: false)
+        model = Sketchup.active_model
+        return say('활성 모델이 없습니다.') unless model
+        cam = model.active_view.camera
+
+        view = model.active_view
+        if off
+          cam.aspect_ratio = 0.0
+          view.invalidate
+          say '뷰포트 비율 고정을 풀었습니다.'
+          return true
+        end
+
+        # 크기는 렌더러가 HelloAck 로 알려줍니다. 아직 모르면 한 번 물어봅니다.
+        ping(pipe: pipe) unless @display
+        unless @display
+          say '렌더러 화면 크기를 모릅니다 — 렌더러가 떠 있는지 보십시오.'
+          return false
+        end
+
+        w, h = @display
+        want = w.to_f / h.to_f
+        have = view.vpheight.to_f > 0 ? view.vpwidth.to_f / view.vpheight.to_f : 0.0
+        cam.aspect_ratio = want
+        view.invalidate
+        say format('렌더러 %d x %d (%.4f) · SketchUp 뷰포트 %d x %d (%.4f)',
+                   w, h, want, view.vpwidth, view.vpheight, have)
+        say '뷰포트를 렌더러 비율로 고정했습니다 — 회색 띠 바깥은 렌더러에 안 나옵니다.'
+        camera(pipe: pipe, force: true)
+      end
+
+      # 카메라만 한 번 보냅니다. 씬은 건드리지 않습니다.
+      def camera(pipe: 'iris', force: false)
+        @last_cam_sig = nil if force
+        r = send_camera_if_moved(pipe: pipe)
+        say(r ? '카메라를 보냈습니다.' : '카메라가 그대로입니다 — force: true 로 강제할 수 있습니다.')
+        r
+      end
+
+      # Hello 만 주고받아 렌더러 정보를 받아 옵니다. 씬은 안 보냅니다.
+      def ping(pipe: 'iris')
+        io = open_pipe(pipe_path(pipe))
+        return nil unless io
+        begin
+          send_frame(io, MSG_HELLO, JSON.generate(hello_payload).b)
+          type, _f, body = recv_frame(io)
+          return nil unless type == MSG_HELLO_ACK
+          ack = (JSON.parse(body) rescue {})
+          remember_display(ack)
+          say format('렌더러: 세션 %s · 화면 %s',
+                     ack['session'].inspect,
+                     @display ? "#{@display[0]}x#{@display[1]}" : '(모름)')
+          ack
+        ensure
+          send_frame(io, MSG_BYE, ''.b) rescue nil
+          io.close rescue nil
+        end
+      end
+
       # 뷰포트 카메라가 움직였으면 보냅니다.
       #
       # **씬은 건드리지 않습니다.** 시점을 돌릴 때마다 36 MB 를 다시 보내면
@@ -480,12 +561,21 @@ module IRIS
         view = model.active_view
         cam  = view.camera
 
+        # **비율을 고정했으면 그 값이 진짜입니다.**
+        #
+        # match_view 로 Camera#aspect_ratio 를 세우면 SketchUp 은 뷰포트
+        # 안쪽만 그리고 바깥을 회색으로 칠합니다. 그런데 vpwidth/vpheight 는
+        # **창 전체**를 계속 알려줍니다. 그것으로 수평 화각을 수직으로
+        # 바꾸면 렌더러가 다른 각을 씁니다 — 구도를 맞추려고 한 일이
+        # 정확히 구도를 어긋나게 합니다.
+        fixed  = (cam.aspect_ratio.to_f rescue 0.0)
+        aspect = fixed > 1e-6 ? fixed :
+                 (view.vpheight.to_f > 0 ? (view.vpwidth.to_f / view.vpheight.to_f) : 0.0)
+
         sig = [cam.eye.to_a, cam.target.to_a, cam.up.to_a,
-               cam.fov, cam.fov_is_height?, view.vpwidth, view.vpheight].flatten
+               cam.fov, cam.fov_is_height?, aspect].flatten
         return if @last_cam_sig == sig
         @last_cam_sig = sig
-
-        aspect = view.vpheight.to_f > 0 ? (view.vpwidth.to_f / view.vpheight.to_f) : 0.0
         payload = {
           'eye'           => point_m(cam.eye),
           'target'        => point_m(cam.target),
@@ -586,6 +676,7 @@ module IRIS
           # 그것을 모르면 바뀐 것만 보내고, 렌더러는 나머지를 영영 못 받아
           # **조용히 빈 화면**이 됩니다. 세션 번호가 그것을 막습니다.
           session = ack['session']
+          remember_display(ack)
           @diag = { session: session, prev: @session,
                     sent_gen: (@sent_gen || {}).size, full: full }
 

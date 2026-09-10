@@ -65,6 +65,16 @@ namespace iris::bridge
         [[nodiscard]] bool        HasPendingCamera() const;
         [[nodiscard]] CameraState TakePendingCamera();
 
+        // **화면 크기를 호스트에게 알려줍니다.**
+        //
+        // 카메라를 그대로 옮겨도 두 화면은 같아지지 않습니다. 우리는 세로
+        // 화각만 맞추므로, 창의 가로세로 비가 다르면 좌우로 더/덜 보입니다.
+        // 호스트가 자기 뷰포트를 이 비율로 고정하면(SketchUp 은
+        // Camera#aspect_ratio 로 회색 띠를 그립니다) 구도가 정확히 같아집니다.
+        //
+        // HelloAck 에 실어 보냅니다 — 호스트가 어차피 매번 여는 자리입니다.
+        void SetDisplaySize(uint32_t width, uint32_t height);
+
         // 텍스처 파일이 놓인 디렉터리. 호스트가 Hello 의 texture_base 로 알려줍니다.
         //
         // 라이브 링크에서는 씬이 파일로 존재하지 않으므로 "씬 파일 옆"이라는
@@ -158,6 +168,8 @@ namespace iris::bridge
 
         CameraState                             m_camera;
         bool                                    m_hasCamera = false;
+        uint32_t                                m_displayW = 0;
+        uint32_t                                m_displayH = 0;
         uint64_t                                m_cameraCount = 0;
 
         mutable std::mutex                      m_texMutex;
