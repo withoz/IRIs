@@ -483,7 +483,7 @@ module IRIS
           @stale_mat_ids = nil
         end
 
-        @caps = probe_capabilities(model)
+        @caps = timed(:caps) { probe_capabilities(model) }
 
         scene = nil
         begin
@@ -526,7 +526,10 @@ module IRIS
           @write_elapsed = Time.now - t1
         end
 
-        report(model, path)
+        # ⚠ **매 추출마다 콘솔에 찍고 파일을 씁니다.** 링크가 재는
+        # extract_ms 안에 이것이 들어 있습니다. SketchUp 콘솔의 puts 는
+        # 쌀 이유가 없습니다 — 재 보고 정합니다.
+        timed(:report) { report(model, path) }
 
         # 씬 전체를 반환하면 Ruby 콘솔이 그 해시를 통째로 에코하다가 몇 분간 얼어붙는다.
         # (정점 15만 개가 전부 텍스트가 된다.) 요약만 돌려주고 씬은 last_scene으로 꺼낸다.
@@ -694,6 +697,37 @@ module IRIS
         [mb['material'],
          b['p'].to_s.hash, b['n'].to_s.hash, b['uv'].to_s.hash, b['i'].to_s.hash,
          b['p'].to_s.bytesize, b['i'].to_s.bytesize]
+      end
+
+      # **태양만 바뀌었을 때는 트리를 다시 훑지 않습니다.**
+      #
+      # 순회가 46 ms 와 250 ms 사이를 오갑니다 — 하는 일의 양은 똑같고
+      # (재순회 0), GC 는 0~3 ms 이고, 렌더러를 꺼도 그대로입니다(실측
+      # 12회 x 2). SketchUp 자신의 변동이라 우리가 줄일 수 없습니다.
+      #
+      # 줄일 수 없으면 **묻지 않는 것**이 답입니다. 그림자 시각만 바뀌면
+      # 지오메트리도 배치도 재질도 그대로이므로, 지난 씬을 그대로 두고
+      # 태양 블록만 갈아 끼웁니다.
+      #
+      # ⚠ 부르는 쪽이 **아무것도 안 바뀌었음을 이미 확인했을 때만** 써야
+      # 합니다(Link#tick 의 dirty.empty? && !mats). 아니면 편집이 조용히
+      # 안 나갑니다.
+      def refresh_sun(model)
+        return nil unless @scene
+        @scene['sun'] = (@sun = collect_sun(model))
+        @run_phase = { walk: 0.0, sun: 0.0, reused: true }
+        @scene
+      end
+
+      def timed(key)
+        t = Time.now
+        v = yield
+        (@run_phase ||= {})[key] = (Time.now - t) * 1000.0
+        v
+      end
+
+      def run_phase
+        @run_phase || {}
       end
 
       def geom_counts
@@ -972,11 +1006,20 @@ module IRIS
       # ---------------------------------------------------------- 씬 수집
 
       def build_scene(model)
-        root_children = []
-        root_meshes   = collect_entities(model.entities, root_children)
+        # **추출 안을 나눠 잽니다.**
+        #
+        # 캐시 100% 적중인데 추출이 64 ms 와 262 ms 를 번갈아 갑니다. GC 로
+        # 짐작했다가 재 보니 GC 시간은 2 ms 였습니다(major 0, 객체 생성량도
+        # 틱마다 같음). 또 짐작하지 않고 단계를 나눕니다.
+        @run_phase = {}
 
-        @definitions.each_value do |d|
-          d['instance_count'] = @instance_count[d['id']] || 0
+        root_children = []
+        root_meshes   = timed(:walk) { collect_entities(model.entities, root_children) }
+
+        timed(:counts) do
+          @definitions.each_value do |d|
+            d['instance_count'] = @instance_count[d['id']] || 0
+          end
         end
 
         # 재질을 살아 있는 것으로 다시 읽었으면 표시를 지웁니다.
@@ -1004,8 +1047,8 @@ module IRIS
           # 메시지(Hello)에 실립니다.
           'capabilities' => @caps,
           'materials'    => @materials.values,
-          'views'        => (@scene_views_list = collect_views(model)),
-          'sun'          => (@sun = collect_sun(model)),
+          'views'        => (@scene_views_list = timed(:views) { collect_views(model) }),
+          'sun'          => (@sun = timed(:sun) { collect_sun(model) }),
           'definitions'  => @definitions,
           'root'         => { 'meshes' => root_meshes, 'children' => root_children },
           'stats'        => scene_stats,

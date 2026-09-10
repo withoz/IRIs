@@ -63,8 +63,11 @@ module IRIS
       #
       # 예외는 out/sketchup/sync_error.txt 에 남깁니다. SketchUp 콘솔의 예외는
       # 화면 밖의 사람에게 전달되지 않기 때문입니다.
-      def sync(pipe: 'iris', textures: true, force: false, full: false)
-        sync_inner(pipe: pipe, textures: textures, force: force, full: full)
+      #   sun_only — 태양만 바뀌었다고 **부르는 쪽이 보장**할 때. 트리를
+      #              다시 훑지 않고 지난 씬의 태양만 갈아 끼웁니다.
+      def sync(pipe: 'iris', textures: true, force: false, full: false, sun_only: false)
+        sync_inner(pipe: pipe, textures: textures, force: force, full: full,
+                   sun_only: sun_only)
       rescue StandardError, ScriptError => e
         log_failure(e)
         raise
@@ -90,7 +93,8 @@ module IRIS
         nil
       end
 
-      def sync_inner(pipe: 'iris', textures: true, force: false, full: false)
+      def sync_inner(pipe: 'iris', textures: true, force: false, full: false,
+                     sun_only: false)
         model = Sketchup.active_model
         return say('활성 모델이 없습니다.') unless model
         return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
@@ -113,7 +117,13 @@ module IRIS
 
         log_line("===== sync force=#{force} full=#{full} =====")
         t_extract0 = Time.now
-        IRIS::Probe.run(dump: false, textures: textures, cache: true)
+        gc0 = gc_snapshot
+        # 태양만 바뀌었으면 트리를 다시 훑지 않습니다. 순회가 46~476 ms 인데
+        # SketchUp 자신의 변동이라 줄일 수 없습니다 — 대신 묻지 않습니다.
+        reused = sun_only && IRIS::Probe.respond_to?(:refresh_sun) &&
+                 IRIS::Probe.last_scene && IRIS::Probe.refresh_sun(model)
+        IRIS::Probe.run(dump: false, textures: textures, cache: true) unless reused
+        @gc = gc_delta(gc0, gc_snapshot)
         scene = IRIS::Probe.last_scene
         return say('씬 추출에 실패했습니다.') unless scene
         extract_ms = (Time.now - t_extract0) * 1000.0
@@ -144,7 +154,9 @@ module IRIS
         # 재 두십시오. 이 줄은 어느 단계에도 안 잡혀 있었습니다 — 추출도
         # 직렬화도 전송도 아니어서 합계가 실제보다 작게 나왔습니다.
         t_sig0 = Time.now
+        g_sig0 = gc_snapshot
         sig = IRIS::Probe.scene_signature(scene)
+        @gc_sig = gc_delta(g_sig0, gc_snapshot)
         sig_ms = (Time.now - t_sig0) * 1000.0
         if !force && @last_sig && @last_sig == sig
           @skipped = @skipped.to_i + 1
@@ -179,7 +191,9 @@ module IRIS
         @skipped = 0
 
         t_send0 = Time.now
+        g_tx0 = gc_snapshot
         ok, sent_bytes, sizes, pack_ms = transmit(pipe, scene, full: full)
+        @gc_tx = gc_delta(g_tx0, gc_snapshot)
         send_ms = (Time.now - t_send0) * 1000.0 - pack_ms
         @last_sig = sig if ok
         unless sent_bytes
@@ -191,8 +205,37 @@ module IRIS
 
         st = scene['stats'] || {}
         say ''
-        say format('추출 %7.1f ms   삼각형 %s · 인스턴스 %s',
-                   extract_ms, comma(st['triangles'].to_i), comma(st['instances'].to_i))
+        say format('추출 %7.1f ms   삼각형 %s · 인스턴스 %s%s',
+                   extract_ms, comma(st['triangles'].to_i), comma(st['instances'].to_i),
+                   reused ? '   (태양만 — 트리를 다시 안 훑음)' : '')
+        # **구간마다 따로 잽니다.**
+        #
+        # 추출만 쟀더니 GC 2 ms 가 나와 "GC 가 아니다"로 접었습니다. 그런데
+        # 다음 틱에서는 서명이 10 ms -> 230 ms 로 튀었습니다 — 순수 Ruby
+        # 해싱인데요. 튀는 자리가 구간을 옮겨 다닌다면 **재는 창이 좁았던
+        # 것**입니다. 셋을 다 봅니다.
+        gcs = [['추출', @gc], ['서명', @gc_sig], ['전송', @gc_tx]]
+        line = gcs.map do |name, g|
+          g ? format('%s %d회/%dms', name, g[:count], g[:time]) : "#{name} ?"
+        end.join(' · ')
+        tot = gcs.sum { |_, g| g ? g[:time] : 0 }
+        obj = gcs.sum { |_, g| g ? g[:alloc] : 0 }
+        say format('  └ GC %s   합 %d ms · 객체 %s개', line, tot, comma(obj))
+        rp = IRIS::Probe.respond_to?(:run_phase) ? IRIS::Probe.run_phase : {}
+        unless rp.empty?
+          say format('  └ 능력 %.1f · 순회 %.1f · 개수 %.1f · 뷰 %.1f · 태양 %.1f · 리포트 %.1f ms',
+                     rp[:caps].to_f, rp[:walk].to_f, rp[:counts].to_f,
+                     rp[:views].to_f, rp[:sun].to_f, rp[:report].to_f)
+        end
+
+        # 순회가 같은 일을 하는데 6배 느려집니다. 하는 일의 양이 실제로
+        # 달라지는지부터 봅니다 — 자식 재사용이 깨지면 정의마다 엔티티를
+        # 다시 훑습니다(면은 빼고). 그러면 시간이 늘고 **객체 수는 거의
+        # 그대로**입니다. 지금 증상과 맞습니다.
+        ps = IRIS::Probe.instance_variable_get(:@stats) || {}
+        say format('  └ 자식 재사용 %s / 재순회 %s · 정의 캐시 %s / 신규 %s',
+                   ps['kids_reused'], ps['kids_rescanned'],
+                   ps['defs_cached'], ps['defs_extracted'])
         say format('서명 %7.1f ms   %s bytes', sig_ms, comma(sig.bytesize))
         say format('직렬화 %6.1f ms   %s bytes (JSON %s + 블롭 %s)',
                    pack_ms, comma(sent_bytes), comma(sizes[:json]), comma(sizes[:bin]))
@@ -244,6 +287,7 @@ module IRIS
         FileUtils.mkdir_p(dir)
         path = File.join(dir, 'sync_timing.csv')
         cols = %w[time ok extract_ms sig_ms pack_ms blob_ms json_ms join_ms send_ms
+                  gc_count gc_major gc_ms gc_alloc
                   open_ms hello_ms write_ms ack_ms bye_ms total_ms bytes
                   geom_sent geom_skipped session prev_session held_gen
                   triangles instances defs_extracted defs_cached].join(',')
@@ -276,6 +320,8 @@ module IRIS
                   format('%.1f', pp[:blob_ms].to_f), format('%.1f', pp[:json_ms].to_f),
                   format('%.1f', pp[:join_ms].to_f),
                   format('%.1f', send_ms),
+                  (@gc || {})[:count].to_i, (@gc || {})[:major].to_i,
+                  (@gc || {})[:time].to_i,  (@gc || {})[:alloc].to_i,
                   format('%.1f', ph[:open].to_f),  format('%.1f', ph[:hello].to_f),
                   format('%.1f', ph[:write].to_f), format('%.1f', ph[:ack].to_f),
                   format('%.1f', ph[:bye].to_f),
@@ -491,7 +537,10 @@ module IRIS
             what << '태양' if sun
             say "변경 감지: #{what.join(' · ')}"
           end
-          sync(pipe: @auto_pipe)
+          # 태양만 바뀌었다는 것은 **여기서 이미 확인했습니다** — 무효화된
+          # 정의도 없고 재질 표시도 없습니다. 그 보장이 있어야 트리를 건너뛸
+          # 수 있습니다.
+          sync(pipe: @auto_pipe, sun_only: (dirty.empty? && !mats && sun))
         ensure
           @auto_busy = false
         end
@@ -565,6 +614,78 @@ module IRIS
         changed ? true : false
       rescue StandardError
         false
+      end
+
+      # **호스트가 느린가, 기계가 바쁜가.**
+      #
+      # 튀는 자리가 구간을 옮겨 다닙니다 — 순회 45->285, 서명 10->230,
+      # JSON 60->246. 하는 일의 양은 틱마다 똑같고(재순회 0), GC 는 0~1 ms
+      # 입니다. 코드 경로 문제라면 이렇게 옮겨 다닐 수 없습니다. **프로세스
+      # 전체가 그 순간 느린 것**입니다.
+      #
+      # 남은 후보는 바깥입니다 — 렌더러가 씬을 다시 짓느라 CPU 를 먹거나,
+      # SketchUp 이 그림자를 다시 계산하거나. 둘은 대응이 다릅니다.
+      #
+      # 파이프를 아예 건드리지 않고 추출과 서명만 반복합니다. 슬라이더도
+      # 필요 없습니다. **렌더러를 켠 채 한 번, 끈 채 한 번** 돌려서
+      # 견주면 갈립니다.
+      #
+      #   IRIS::Link.bench_extract          10회
+      #   IRIS::Link.bench_extract(n: 20)
+      def bench_extract(n: 10, note: nil)
+        return say('iris_probe.rb 를 먼저 로드하십시오.') unless defined?(IRIS::Probe)
+        was = auto?
+        auto_stop if was
+        log_line("===== bench_extract n=#{n} #{note}#{was ? ' (auto 를 잠시 멈춤)' : ''} =====")
+        rows = []
+        n.times do |i|
+          g0 = gc_snapshot
+          t0 = Time.now
+          IRIS::Probe.run(dump: false, textures: true, cache: true)
+          e_ms = (Time.now - t0) * 1000.0
+          scene = IRIS::Probe.last_scene
+          t1 = Time.now
+          sig = scene ? IRIS::Probe.scene_signature(scene) : ''
+          s_ms = (Time.now - t1) * 1000.0
+          g = gc_delta(g0, gc_snapshot)
+          rp = IRIS::Probe.run_phase
+          rows << [e_ms, s_ms, rp[:walk].to_f, (g || {})[:time].to_i]
+          say format('  %2d  추출 %7.1f · 순회 %7.1f · 서명 %7.1f · GC %3d ms · 서명 %s bytes',
+                     i + 1, e_ms, rp[:walk].to_f, s_ms, (g || {})[:time].to_i, comma(sig.bytesize))
+        end
+        w = rows.map { |r| r[2] }
+        say format('  순회  최소 %.1f · 중앙 %.1f · 최대 %.1f ms   (최대/최소 %.1f배)',
+                   w.min, w.sort[w.size / 2], w.max, w.max / [w.min, 1e-9].max)
+        say '  렌더러를 켠 채와 끈 채로 각각 돌려 견주십시오.'
+        say '  끈 채로 흔들림이 사라지면 원인은 렌더러의 CPU 경합입니다.'
+        auto if was
+        nil
+      end
+
+      # **추출 중에 GC 가 얼마나 도는가.**
+      #
+      # 캐시 100%% 적중인데 추출이 64 ms 와 262 ms 를 번갈아 갑니다. GC 로
+      # 보이지만 **재기 전에는 추측입니다.** 이 프로젝트에서 통계가 옳게
+      # 계산되고 결론만 틀린 일이 이미 한 번 있었습니다(사각 광원 회귀).
+      #
+      # GC.stat[:time] 은 시작 이후 누적 GC 시간(ms)입니다. Ruby 3.1 부터
+      # 있고 SketchUp 2026 은 3.2 입니다. 없으면 조용히 0 이 됩니다.
+      def gc_snapshot
+        st = GC.stat
+        { count: GC.count,
+          major: st[:major_gc_count].to_i,
+          minor: st[:minor_gc_count].to_i,
+          time:  st[:time].to_i,
+          alloc: st[:total_allocated_objects].to_i }
+      rescue StandardError
+        nil
+      end
+
+      def gc_delta(a, b)
+        return nil unless a && b
+        { count: b[:count] - a[:count], major: b[:major] - a[:major],
+          minor: b[:minor] - a[:minor], time: b[:time] - a[:time],
+          alloc: b[:alloc] - a[:alloc] }
       end
 
       # 렌더러 화면 크기. HelloAck 로 옵니다.
