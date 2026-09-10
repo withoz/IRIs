@@ -228,9 +228,31 @@ module IRIS
         require 'fileutils'
         FileUtils.mkdir_p(dir)
         path = File.join(dir, 'sync_timing.csv')
+        cols = %w[time ok extract_ms pack_ms blob_ms json_ms join_ms send_ms
+                  open_ms hello_ms write_ms ack_ms bye_ms total_ms bytes
+                  geom_sent geom_skipped session prev_session held_gen
+                  triangles instances defs_extracted defs_cached].join(',')
+
+        # **열이 바뀌었는데 옛 파일에 이어 붙이면 모든 값이 한 칸씩 밀립니다.**
+        #
+        # 콘솔에서 도구를 다시 로드하는 것이 이 도구의 정상적인 사용법이고,
+        # 그때 열이 늘어날 수 있습니다. 조용히 틀린 표가 남고, 나중에 그 표를
+        # 믿고 판단합니다. 머리글이 다르면 옛 파일을 옆으로 치웁니다.
+        if File.exist?(path)
+          first = (File.open(path, 'r:UTF-8', &:gets).to_s.chomp rescue nil)
+          if first != cols
+            stamp = Time.now.strftime('%m%d_%H%M%S')
+            begin
+              File.rename(path, File.join(dir, "sync_timing_#{stamp}.csv"))
+            rescue StandardError
+              File.delete(path) rescue nil
+            end
+          end
+        end
+
         head = !File.exist?(path)
         File.open(path, 'a:UTF-8') do |f|
-          f.puts('time,ok,extract_ms,pack_ms,blob_ms,json_ms,join_ms,send_ms,open_ms,hello_ms,write_ms,ack_ms,bye_ms,total_ms,bytes,geom_sent,geom_skipped,session,prev_session,held_gen,triangles,instances,defs_extracted,defs_cached') if head
+          f.puts(cols) if head
           ph = @phase || {}
           pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
           f.puts([Time.now.strftime('%H:%M:%S'), (ok ? 'ok' : 'FAIL'),
