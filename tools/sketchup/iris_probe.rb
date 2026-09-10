@@ -54,11 +54,16 @@ module IRIS
     #   5 — 지오메트리 판(gen) 추가 — 델타의 근거
     #   6 — 뒷면 재질 면의 UV·법선·감김 교정 (메시 내용이 바뀝니다)
     #   7 — v 뒤집기 (SketchUp 은 아래가 v=0, 렌더러는 위가 v=0)
+    #   8 — 메시 내용 서명(msig) 추가 — 변경 감지를 싸게 하려고
     #
     # ⚠ 번호를 올리는 것을 잊어도 되도록, fetch 가 **필드 목록**도 함께
     #   봅니다(DefCache::CACHE_FIELDS). 실제로 한 번 잊었고 델타가 조용히
     #   꺼졌습니다.
-    CACHE_SCHEMA = 7
+    CACHE_SCHEMA = 8
+
+    # 뷰 목록의 첫 항목 이름. 서명에서 빼려면 한 곳에서 정해야 합니다 —
+    # 문자열을 두 군데 쓰면 한쪽만 고쳐 놓고 못 알아챕니다.
+    CURRENT_VIEW_NAME = '(현재 뷰)'
 
     # Face#mesh 비트마스크 (1: UVQ front, 2: UVQ back, 4: normals)
     # 버전별 상수 차이 가능성이 있어 값을 신뢰하지 않고 결과를 런타임에 검증한다.
@@ -170,7 +175,7 @@ module IRIS
       #
       # 필드 목록 검사는 그 실수를 기계가 잡아 줍니다 — 읽을 필드를 늘리면
       # 여기에도 적어야 하고, 적으면 옛 캐시가 자동으로 버려집니다.
-      CACHE_FIELDS = %i[gen kids esize meshes mats verts tris faces seen].freeze
+      CACHE_FIELDS = %i[gen kids esize meshes mats verts tris faces seen msig].freeze
 
       # 모델이 바뀌면 캐시를 통째로 버립니다.
       #
@@ -238,9 +243,32 @@ module IRIS
         @gen = @gen.to_i + 1
       end
 
+      # 메시 내용의 서명. **추출할 때 한 번만** 만듭니다.
+      #
+      # 판(gen)은 "다시 뽑았다"만 말합니다. 옵저버가 우리 읽기에 반응해
+      # 헛무효화를 만들면 내용이 같은데도 판이 올라가고, 그러면 편집이
+      # 없는데도 매초 델타가 돌아 **렌더러의 누적이 영영 수렴하지 않습니다.**
+      # 실제로 그렇게 됐고, 그래서 지금까지 매니페스트 전체를 견줬습니다.
+      #
+      # 전체를 견주려면 동기화마다 JSON 을 두 번 만들어야 합니다(판정용 ·
+      # 전송용). 2.98 MB + 2.66 MB 를 매초 버리니 GC 가 한 번 걸러 한 번씩
+      # 걸렸습니다 — JSON 생성이 62 ms 와 285 ms 를 번갈았습니다.
+      #
+      # 내용 서명을 **추출 시점에** 만들어 두면 둘 다 얻습니다. 값은 그
+      # 정의의 메시 바이트에서 나오므로 헛무효화를 그대로 걸러 냅니다.
+      def mesh_signature(meshes)
+        (meshes || []).map do |mb|
+          b = mb['bin'] || {}
+          [mb['material'],
+           b['p'].to_s.hash, b['n'].to_s.hash,
+           b['uv'].to_s.hash, b['i'].to_s.hash,
+           b['p'].to_s.bytesize, b['i'].to_s.bytesize]
+        end
+      end
+
       def store(defn, meshes, mats, verts, tris, faces, seen, kids = nil)
         @entries[defn.entityID] = {
-          schema: CACHE_SCHEMA, gen: next_gen,
+          schema: CACHE_SCHEMA, gen: next_gen, msig: mesh_signature(meshes),
           kids: kids, esize: (defn.entities.size rescue nil),
           meshes: meshes, mats: mats, verts: verts, tris: tris, faces: faces,
           # 능력 플래그(법선·UV 추출 성공 여부)도 함께 보관한다.
@@ -585,6 +613,7 @@ module IRIS
 
       def strip_def(d, blob, skip_geom = nil)
         out = d.dup
+        out.delete('msig')   # 서명 전용 — 렌더러에는 안 보냅니다
         gen = d['gen']
         # ⚠ 지오메트리가 **있는** 정의에만 표시합니다.
         #
@@ -603,6 +632,68 @@ module IRIS
           @geom_sent = @geom_sent.to_i + 1 unless out['meshes'].empty?
         end
         out
+      end
+
+      # **바뀌었는가만 답하는 서명.**
+      #
+      # 예전에는 매니페스트 JSON 전체(2.98 MB)를 만들어 견줬습니다. 전송용
+      # JSON(2.66 MB)을 따로 또 만드니 동기화 한 번에 5.6 MB 를 버렸고, GC 가
+      # 한 번 걸러 한 번씩 걸려 JSON 생성이 62 ms 와 285 ms 를 번갈았습니다.
+      #
+      # 첫 시도는 "메시만 빼고 나머지는 그대로" 였는데 **거의 안 줄었습니다** —
+      # 2.76 MB. 부피는 메시가 아니라 **배치**였습니다. 인스턴스 6,444개의
+      # 4x4 변환이 글자로 1.9 MB 입니다. GC 는 JSON 에서 추출로 옮겨 갔을
+      # 뿐이었습니다(62↔262).
+      #
+      # 그래서 **직렬화하지 않고 해싱합니다.** Array#hash 는 요소를 재귀로
+      # 훑지만 문자열을 만들지 않습니다. 서명은 정의당 한 줄로 줄어듭니다.
+      #
+      # 메시 바이트는 추출 시점에 만들어 둔 msig 가 대표합니다 — 판(gen)이
+      # 아니라 **내용**이므로, 옵저버가 헛무효화를 만들어도 걸러 냅니다.
+      # 그 성질이 없으면 편집이 없는데도 매초 델타가 돌아 렌더러 누적이
+      # 수렴하지 않습니다. 실제로 그렇게 됐던 자리입니다.
+      #
+      # 해시는 64비트라 충돌하면 편집을 조용히 놓칩니다. 확률은 무시할
+      # 수준이지만 **한 덩어리로 뭉치지는 않습니다** — 정의마다 따로 두어
+      # 충돌이 한 정의 안에서만 성립하게 합니다.
+      def scene_signature(scene)
+        out = []
+
+        (scene['definitions'] || {}).each do |dk, d|
+          out << [dk, d['gen'], d['msig'].hash, (d['children'] || []).hash,
+                  d['name'], d['light'].hash, d['instance_count'], d['is_group']]
+        end
+
+        # 루트는 캐시하지 않아 msig 가 없습니다. 바이트를 그 자리에서 해싱합니다 —
+        # 보통 몇 개 안 됩니다.
+        r = scene['root'] || {}
+        out << ['#root', (r['children'] || []).hash,
+                (r['meshes'] || []).map { |mb| root_mesh_sig(mb) }.hash]
+
+        scene.each do |k, v|
+          next if k == 'definitions' || k == 'root'
+          out << if k == 'views'
+                   # **'(현재 뷰)' 는 뺍니다.**
+                   #
+                   # 시점을 돌릴 때마다 이 항목이 바뀌어 씬이 "바뀐 것"이
+                   # 됩니다. 카메라는 전용 메시지로 따로 가므로(05번 3절)
+                   # 이것 때문에 2.7 MB 델타가 도는 것은 낭비입니다.
+                   # 매니페스트에는 그대로 실립니다 — 렌더러가 초기 시점으로
+                   # 쓰기 때문입니다(SceneBuilder.cpp).
+                   [k, (v || []).reject { |x| x['name'] == CURRENT_VIEW_NAME }.hash]
+                 else
+                   [k, v.hash]
+                 end
+        end
+
+        JSON.generate(out)
+      end
+
+      def root_mesh_sig(mb)
+        b = mb['bin'] || {}
+        [mb['material'],
+         b['p'].to_s.hash, b['n'].to_s.hash, b['uv'].to_s.hash, b['i'].to_s.hash,
+         b['p'].to_s.bytesize, b['i'].to_s.bytesize]
       end
 
       def geom_counts
@@ -1053,6 +1144,7 @@ module IRIS
           end
           meshes = hit[:meshes]
           gen    = hit[:gen]
+          msig   = hit[:msig]
           # 캐시된 메시가 참조하는 머티리얼 레코드를 이번 실행의 목록에 되살린다.
           #
           # 재질이 바뀌었으면 캐시된 레코드는 낡았습니다. 살아 있는 재질에서
@@ -1085,10 +1177,13 @@ module IRIS
             @cache.store(defn, meshes, mats,
                          local[:verts], local[:tris], local[:faces],
                          { normals: @seen[:normals], uvs: @seen[:uvs] }, kids)
-            gen = @cache.fetch(defn)&.fetch(:gen, nil)
+            e = @cache.fetch(defn)
+            gen  = e && e[:gen]
+            msig = e && e[:msig]
           end
-          # 캐시가 없으면 판을 매길 수 없습니다 — 매번 새 값이어야 하므로
-          # 델타가 성립하지 않고, 그때는 항상 전체를 보냅니다.
+          # 캐시가 없으면 판을 매길 수 없습니다 — 매번 새 음수여야 하므로
+          # 델타가 성립하지 않고, 그때는 항상 전체를 보냅니다. 서명도
+          # 자동으로 매번 달라집니다.
           gen ||= (@nocache_gen = @nocache_gen.to_i + 1) * -1
           @stats['defs_extracted'] += 1
         end
@@ -1096,6 +1191,8 @@ module IRIS
         @definitions[key]['meshes']        = meshes
         @definitions[key]['children']      = children
         @definitions[key]['gen']           = gen
+        # 매니페스트에는 안 실립니다 — 서명에만 씁니다(strip_def 가 뺍니다).
+        @definitions[key]['msig']          = msig
         @definitions[key]['persistent_id'] = safe_pid(defn)
         @definitions[key]['is_group']      = (defn.group? rescue false)
         @stats['definitions'] += 1
@@ -1353,7 +1450,7 @@ module IRIS
 
         # 현재 뷰포트 카메라도 하나의 시점으로 포함한다.
         begin
-          out << view_entry('(현재 뷰)', model.active_view.camera)
+          out << view_entry(CURRENT_VIEW_NAME, model.active_view.camera)
         rescue StandardError
           nil
         end

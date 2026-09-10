@@ -135,7 +135,17 @@ module IRIS
         # 비교는 매니페스트 JSON 하나입니다. 지오메트리는 정의마다 **판(gen)**
         # 이 붙어 있고 다시 추출될 때만 올라가므로, 매니페스트만 같으면 씬 전체가
         # 같습니다. 36 MB 를 들고 있으면서 비교할 필요가 없어졌습니다.
-        sig = IRIS::Probe.plan_binary(scene)[:json]
+        # **판정용 서명은 전송용 매니페스트와 다릅니다.**
+        #
+        # 예전에는 여기서 매니페스트 전체(2.98 MB)를 만들어 견줬습니다.
+        # 전송용(2.66 MB)을 따로 또 만드니 동기화 한 번에 5.6 MB 를 버렸고,
+        # GC 가 한 번 걸러 한 번씩 걸렸습니다 — JSON 생성이 62 ms 와 285 ms
+        # 를 번갈았습니다(실측). 서명은 내용이 같은지만 답하면 됩니다.
+        # 재 두십시오. 이 줄은 어느 단계에도 안 잡혀 있었습니다 — 추출도
+        # 직렬화도 전송도 아니어서 합계가 실제보다 작게 나왔습니다.
+        t_sig0 = Time.now
+        sig = IRIS::Probe.scene_signature(scene)
+        sig_ms = (Time.now - t_sig0) * 1000.0
         if !force && @last_sig && @last_sig == sig
           @skipped = @skipped.to_i + 1
 
@@ -158,20 +168,24 @@ module IRIS
         # 크기가 같은데 내용이 다르면 어디가 다른지 알려줍니다.
         # 편집이 없는데 매번 달라지면 씬에 비결정적 필드가 들어 있다는 뜻이고,
         # 그러면 "변경 없음" 판정이 영영 성립하지 않습니다 — 실제로 겪었습니다.
+        # 크기가 같은데 내용이 다르면 어디가 다른지 알려줍니다. 견주는 것은
+        # 이제 매니페스트가 아니라 **서명**입니다 — 이름을 안 고치면 나중에
+        # 매니페스트를 보고 있다고 착각합니다.
         if @last_sig && @last_sig.bytesize == sig.bytesize && @last_sig != sig
           off = first_diff(@last_sig, sig)
-          say format('  매니페스트 크기는 같은데 내용이 다릅니다 (오프셋 %d): %s',
+          say format('  서명 크기는 같은데 내용이 다릅니다 (오프셋 %d): %s',
                      off, sig.byteslice([off - 30, 0].max, 80).inspect) if off
         end
         @skipped = 0
 
         t_send0 = Time.now
-        ok, bytes, sizes, pack_ms = transmit(pipe, scene, full: full)
+        ok, sent_bytes, sizes, pack_ms = transmit(pipe, scene, full: full)
         send_ms = (Time.now - t_send0) * 1000.0 - pack_ms
         @last_sig = sig if ok
-        unless bytes
+        unless sent_bytes
           say '전송하지 못했습니다 — 렌더러(Rtxpt.exe)가 떠 있는지 보십시오.'
-          log_timing(extract_ms, 0.0, send_ms, 0, scene['stats'] || {}, ok: false)
+          log_timing(extract_ms, 0.0, send_ms, 0, scene['stats'] || {},
+                     ok: false, sig_ms: sig_ms)
           return false
         end
 
@@ -179,8 +193,9 @@ module IRIS
         say ''
         say format('추출 %7.1f ms   삼각형 %s · 인스턴스 %s',
                    extract_ms, comma(st['triangles'].to_i), comma(st['instances'].to_i))
+        say format('서명 %7.1f ms   %s bytes', sig_ms, comma(sig.bytesize))
         say format('직렬화 %6.1f ms   %s bytes (JSON %s + 블롭 %s)',
-                   pack_ms, comma(bytes.bytesize), comma(sizes[:json]), comma(sizes[:bin]))
+                   pack_ms, comma(sent_bytes), comma(sizes[:json]), comma(sizes[:bin]))
         pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
         unless pp.empty?
           say format('  └ 블롭 %.1f · JSON %.1f · 조립 %.1f ms',
@@ -197,13 +212,13 @@ module IRIS
                      gc[:sent], gc[:skipped])
         end
         say format('전송 %8.1f ms   %.0f MB/s', send_ms,
-                   bytes.bytesize / 1048576.0 / [send_ms / 1000.0, 1e-9].max)
+                   sent_bytes / 1048576.0 / [send_ms / 1000.0, 1e-9].max)
         if @phase
           say format('  └ 열기 %.1f · Hello %.1f · 쓰기 %.1f · Ack 대기 %.1f · Bye %.1f ms',
                      @phase[:open].to_f, @phase[:hello].to_f, @phase[:write].to_f,
                      @phase[:ack].to_f, @phase[:bye].to_f)
         end
-        say format('합계 %8.1f ms', extract_ms + pack_ms + send_ms)
+        say format('합계 %8.1f ms', extract_ms + sig_ms + pack_ms + send_ms)
 
         # 추출 중 우리 스스로 만든 무효화. 0이 아니면 그만큼 옵저버가
         # 우리 읽기 동작에 반응했다는 뜻입니다 — 억제하지 않으면 자동 동기화가
@@ -214,7 +229,7 @@ module IRIS
                      sup[:elements].to_i, sup[:materials].to_i)
         end
         say(ok ? '렌더러 화면이 바뀌어야 합니다.' : '전송 실패 — 위 메시지를 보십시오.')
-        log_timing(extract_ms, pack_ms, send_ms, bytes.bytesize, st)
+        log_timing(extract_ms, pack_ms, send_ms, sent_bytes, st, sig_ms: sig_ms)
         ok
       end
 
@@ -223,12 +238,12 @@ module IRIS
       # 콘솔에만 찍으면 나중에 "무엇이 얼마나 빨라졌는가"를 말할 수 없습니다.
       # 델타(5단계)는 정확히 그 질문에 답해야 하는 작업이므로, 고치기 전의
       # 숫자가 남아 있어야 합니다.
-      def log_timing(extract_ms, pack_ms, send_ms, bytes, st, ok: true)
+      def log_timing(extract_ms, pack_ms, send_ms, bytes, st, ok: true, sig_ms: 0.0)
         dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'out', 'sketchup'))
         require 'fileutils'
         FileUtils.mkdir_p(dir)
         path = File.join(dir, 'sync_timing.csv')
-        cols = %w[time ok extract_ms pack_ms blob_ms json_ms join_ms send_ms
+        cols = %w[time ok extract_ms sig_ms pack_ms blob_ms json_ms join_ms send_ms
                   open_ms hello_ms write_ms ack_ms bye_ms total_ms bytes
                   geom_sent geom_skipped session prev_session held_gen
                   triangles instances defs_extracted defs_cached].join(',')
@@ -256,14 +271,15 @@ module IRIS
           ph = @phase || {}
           pp = IRIS::Probe.respond_to?(:pack_phase) ? IRIS::Probe.pack_phase : {}
           f.puts([Time.now.strftime('%H:%M:%S'), (ok ? 'ok' : 'FAIL'),
-                  format('%.1f', extract_ms), format('%.1f', pack_ms),
+                  format('%.1f', extract_ms), format('%.1f', sig_ms),
+                  format('%.1f', pack_ms),
                   format('%.1f', pp[:blob_ms].to_f), format('%.1f', pp[:json_ms].to_f),
                   format('%.1f', pp[:join_ms].to_f),
                   format('%.1f', send_ms),
                   format('%.1f', ph[:open].to_f),  format('%.1f', ph[:hello].to_f),
                   format('%.1f', ph[:write].to_f), format('%.1f', ph[:ack].to_f),
                   format('%.1f', ph[:bye].to_f),
-                  format('%.1f', extract_ms + pack_ms + send_ms), bytes,
+                  format('%.1f', extract_ms + sig_ms + pack_ms + send_ms), bytes,
                   (IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts[:sent] : 0),
                   (IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts[:skipped] : 0),
                   (@diag || {})[:session].inspect, (@diag || {})[:prev].inspect,
@@ -725,7 +741,9 @@ module IRIS
         @phase[:open] = (Time.now - t) * 1000.0
         return [false, nil, nil, 0.0] unless io
 
-        bytes = nil
+        # 이제 바이트 문자열이 아니라 **크기**만 들고 다닙니다. 프레임은
+        # 조각째 흘려보내므로 통짜 문자열이 존재하지 않습니다.
+        total = nil
         sizes = nil
         pack_ms = 0.0
         begin
@@ -777,10 +795,19 @@ module IRIS
             @sent_gen = {}
           end
 
+          # **이어 붙이지 않습니다.**
+          #
+          # `head + json + plan.join` 은 전체 크기의 문자열을 새로 만듭니다.
+          # 전체 전송이면 111 MB 를 한 번 더 복사하는 것이고 실측 513 ms 였습니다
+          # — 파이프에 쓰는 시간(65 ms)의 8배입니다. 델타(2.66 MB)에서도 그
+          # 할당이 GC 를 불러 이따금 200 ms 씩 튀었습니다.
+          #
+          # 프레임 길이는 미리 압니다(plan[:bytes]). 머리를 쓰고 조각을 차례로
+          # 흘려보내면 큰 할당이 통째로 사라집니다.
           t = Time.now
           plan  = IRIS::Probe.plan_binary(scene, skip_geom: @sent_gen)
-          bytes = plan[:head] + plan[:json] + plan[:plan].join
           sizes = plan[:sizes]
+          total = plan[:bytes]
           pack_ms = (Time.now - t) * 1000.0
           IRIS::Probe.pack_phase[:join_ms] =
             pack_ms - IRIS::Probe.pack_phase[:blob_ms].to_f - IRIS::Probe.pack_phase[:json_ms].to_f
@@ -790,7 +817,7 @@ module IRIS
           @seq = @seq.to_i + 1
           t = Time.now
           send_frame(io, MSG_SYNC_BEGIN, JSON.generate('seq' => @seq).b)
-          send_frame(io, MSG_SCENE_BLOB, bytes)
+          send_scene_frame(io, plan, total)
           send_frame(io, MSG_SYNC_END,   JSON.generate('seq' => @seq).b)
           @phase[:write] = (Time.now - t) * 1000.0
 
@@ -799,7 +826,7 @@ module IRIS
           @phase[:ack] = (Time.now - t) * 1000.0
           unless type == MSG_SYNC_ACK
             fail_with("SyncAck 를 받지 못했습니다 (#{MSG_NAMES[type] || type})")
-            return [false, bytes, sizes, pack_ms]
+            return [false, total, sizes, pack_ms]
           end
 
           # 렌더러가 받은 지오메트리를 기억합니다. 다음 번엔 건너뜁니다.
@@ -810,13 +837,26 @@ module IRIS
           @phase[:bye] = (Time.now - t) * 1000.0
           @sent_count = @sent_count.to_i + 1
           @last_error = nil
-          [true, bytes, sizes, pack_ms]
+          [true, total, sizes, pack_ms]
         rescue StandardError => e
           fail_with("#{e.class} — #{e.message}")
-          [false, bytes, sizes, pack_ms]
+          [false, total, sizes, pack_ms]
         ensure
           io.close rescue nil
         end
+      end
+
+      # 씬 한 프레임을 **조각째** 보냅니다.
+      #
+      # 길이를 먼저 알기 때문에 가능합니다. 받는 쪽은 바뀌지 않습니다 —
+      # 프레임 형식이 같고 바이트 순서도 같습니다.
+      def send_scene_frame(io, plan, total)
+        io.write([MSG_SCENE_BLOB, 0].pack('VV'))
+        io.write([total].pack('Q<'))
+        io.write(plan[:head])
+        io.write(plan[:json])
+        plan[:plan].segments.each { |seg| io.write(seg) }
+        io.flush
       end
 
       def send_frame(io, type, payload)
