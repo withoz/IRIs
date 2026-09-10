@@ -48,6 +48,8 @@ module IRIS
         by_texture(model, max_list)
         assets(model, max_list)
         manifest_check(model)
+        placed(model, max_list)
+        unreachable(model, max_list)
 
         say ''
         say '=' * 66
@@ -264,6 +266,130 @@ module IRIS
           end
         end
         say ''
+      end
+
+      # --- [8] 실제로 배치된 것 중 무엇이 화면에서 빠지는가 -----------------
+      #
+      # `d.instances` 는 **모델 어디에도 놓이지 않은** 정의 안의 인스턴스까지
+      # 셉니다. 지우고 purge 하지 않은 찌꺼기가 그대로 잡힙니다. 그래서
+      # "인스턴스 5개인데 매니페스트에 없다"가 버그처럼 보입니다 — 아닙니다.
+      #
+      # 루트에서 내려가며 **실제 배치**만 셉니다. 그리고 렌더러가 건너뛰는
+      # 것(hidden)을 같이 셉니다. 그 둘이 겹치는 자리가 화면에서 사라지는
+      # 자리입니다.
+      def placed(model, max_list)
+        say '=' * 66
+        say '[8] 실제 배치 — 그리고 hidden 때문에 화면에서 빠지는 것'
+        say '=' * 66
+        @seen_def = {}   # def entityID => [배치수, 숨김수]
+        @walked   = 0
+        walk(model.entities, 0)
+        say format('    배치 인스턴스 %d개', @walked)
+
+        hid_all = @seen_def.values.sum { |v| v[1] }
+        say format('    그중 hidden %d개 — 렌더러가 건너뜁니다 (SceneBuilder.cpp:409)', hid_all)
+
+        asset_ids = {}
+        model.definitions.each { |d| asset_ids[d.entityID] = true if asset_info(d) }
+        hid_asset = @seen_def.sum { |k, v| asset_ids[k] ? v[1] : 0 }
+        say format('    그중 Enscape 자산 %d개', hid_asset)
+        say ''
+
+        rows = @seen_def.reject { |_, v| v[1].zero? }
+                        .sort_by { |_, v| -v[1] }
+        if rows.empty?
+          say '    숨겨진 배치가 없습니다.'
+        else
+          say format('    %-38s %6s %6s %5s', '숨겨진 정의', '배치', '숨김', '자산')
+          rows.first(max_list).each do |eid, v|
+            d = model.definitions.find { |x| x.entityID == eid }
+            say format('    %-38s %6d %6d %5s',
+                       (d ? d.name.to_s : "def_#{eid}")[0, 38],
+                       v[0], v[1], asset_ids[eid] ? 'O' : '-')
+          end
+        end
+        say ''
+        say '    Enscape 는 자산의 자리표시를 일부러 숨깁니다 — SketchUp 화면에'
+        say '    거친 대역을 보이지 않으려고요. 렌더할 때 실물로 바꿔 끼웁니다.'
+        say '    우리는 그 hidden 을 "보이지 말라"로 읽어 통째로 건너뜁니다.'
+        say '    라이브러리가 없어도 **대역은 그릴 수 있습니다.**'
+        say ''
+      end
+
+      def walk(entities, depth)
+        return if depth > 12
+        entities.each do |e|
+          next unless e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
+          d = (e.is_a?(Sketchup::Group) ? (e.definition rescue nil) : (e.definition rescue nil))
+          next unless d
+          @walked += 1
+          r = (@seen_def[d.entityID] ||= [0, 0])
+          r[0] += 1
+          hidden = (e.hidden? rescue false)
+          r[1] += 1 if hidden
+          # 숨겨진 가지는 렌더러도 안 내려가므로 여기서도 안 내려갑니다.
+          walk(d.entities, depth + 1) unless hidden
+        end
+      end
+
+      # --- [9] 보냈지만 절대 안 그려지는 것 ---------------------------------
+      #
+      # [8] 은 **자기 자신이** 숨겨진 것만 셉니다. 그런데 숨겨진 그룹 **안에**
+      # 든 것도 안 그려집니다 — 렌더러는 숨은 가지를 통째로 건너뜁니다.
+      # 프로브는 숨김과 무관하게 전부 뽑아 보내므로, 그 차이만큼이 **보냈는데
+      # 화면에 없는** 지오메트리입니다.
+      #
+      # 식물 하나를 쫓기보다 이 집합을 통째로 보는 편이 낫습니다. 큰 식물이
+      # 여기 들어 있으면 원인은 그 식물이 아니라 **그것을 덮은 그룹**입니다.
+      def unreachable(model, max_list)
+        say '=' * 66
+        say '[9] 보냈지만 절대 안 그려지는 것 (숨은 가지 안)'
+        say '=' * 66
+        vis = {}
+        all = {}
+        reach(model.entities, 0, vis, true)
+        reach(model.entities, 0, all, false)
+
+        only = all.keys - vis.keys
+        say format('    닿는 정의 %d종 · 그중 보이는 경로가 있는 것 %d종',
+                   all.size, vis.size)
+        if only.empty?
+          say '    보냈는데 안 그려지는 정의는 없습니다.'
+          say ''
+          return
+        end
+
+        rows = only.map do |eid|
+          d = model.definitions.find { |x| x.entityID == eid }
+          [d, d ? model_triangles(d) : 0]
+        end.sort_by { |_, t| -t }
+        total = rows.sum { |_, t| t }
+        say format('    **%d종 · 삼각형 %d개가 화면에 절대 안 나옵니다**', rows.size, total)
+        say ''
+        say format('    %-40s %10s %5s', '정의', '삼각형', '식물?')
+        rows.first(max_list).each do |d, t|
+          nm = d ? d.name.to_s : '?'
+          say format('    %-40s %10d %5s', nm[0, 40], t,
+                     WORDS.match?(nm) ? 'O' : '-')
+        end
+        say ''
+        say '    식물 열이 O 면 원인은 그 식물이 아니라 **그것을 덮은 숨은 그룹**입니다.'
+        say ''
+      end
+
+      def reach(entities, depth, seen, skip_hidden)
+        return if depth > 12
+        entities.each do |e|
+          next unless e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
+          d = (e.definition rescue nil)
+          next unless d
+          next if skip_hidden && (e.hidden? rescue false)
+          # 같은 정의를 여러 번 만나도 한 번만 내려갑니다 — 안 그러면 인스턴스
+          # 수만큼 지수로 늘어납니다.
+          nxt = !seen.key?(d.entityID)
+          seen[d.entityID] = true
+          reach(d.entities, depth + 1, seen, skip_hidden) if nxt
+        end
       end
 
       def asset_info(defn)

@@ -22,6 +22,7 @@ module IRIS
     INCH_TO_M     = 0.0254
     LIGHT_DICT    = 'Enscape.Light'
     MATERIAL_DICT = 'Enscape.Material'
+    ASSET_DICT    = 'Enscape.Asset'
 
     # RTXPT 는 spot.radius == 0 을 가정하지 않습니다 (LightsBaker.cpp 의
     # assert(false) — "not tested with radius == 0"). 0 이면 이 값을 씁니다.
@@ -43,6 +44,35 @@ module IRIS
     @lumen_scale = 1.0
 
     class << self
+      # ---------------------------------------------------------------- 자산
+
+      # Enscape 자산이면 {source:, id:}, 아니면 nil.
+      #
+      # **Source 가 'REMOTE' 면 실물 지오메트리가 .skp 안에 없습니다.**
+      # 모델에는 자리표시만 들어 있고(62~118 삼각형짜리 껍데기), Enscape 는
+      # 렌더할 때 자기 라이브러리의 실물로 바꿔 끼웁니다. 그래서 SketchUp
+      # 인스턴스는 hidden 으로 놓여 있습니다 — 거친 껍데기를 화면에 보이지
+      # 않으려는 것입니다.
+      #
+      # 우리는 그 라이브러리가 없으므로 **그릴 수 없습니다.** 조용히 빠지면
+      # "식물이 안 나온다"가 되고 원인을 파일 안에서 찾게 됩니다. 세어서
+      # 리포트에 적습니다.
+      #
+      # Source 가 비어 있으면 지오메트리가 파일에 들어 있습니다 — 평범하게
+      # 그려집니다. 실측: 배치된 자산 11종 중 REMOTE 2종(식물)만 숨김.
+      def asset(defn)
+        d = (defn.attribute_dictionary(ASSET_DICT) rescue nil)
+        return nil unless d
+        { 'source' => (d['Source'].to_s rescue ''), 'id' => (d['Id'].to_s rescue '') }
+      rescue StandardError
+        nil
+      end
+
+      def remote_asset?(defn)
+        a = asset(defn)
+        a ? a['source'].to_s.upcase == 'REMOTE' : false
+      end
+
       # ---------------------------------------------------------------- 조명
 
       # 컴포넌트 정의가 Enscape 조명이면 파라미터를, 아니면 nil.

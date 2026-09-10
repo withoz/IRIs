@@ -984,6 +984,11 @@ module IRIS
 
       def instance_entry(inst, defn)
         @stats['instances'] += 1
+        # 렌더러는 hidden 노드를 통째로 건너뜁니다(SceneBuilder.cpp:409) —
+        # 그 아래 가지까지 전부. 보냈는데 화면에 없는 것이 여기서 생기므로
+        # 세어서 리포트에 적습니다. 조용히 사라지면 원인을 엉뚱한 데서 찾습니다.
+        hidden = (inst.hidden? rescue false)
+        @stats['instances_hidden'] += 1 if hidden
         key = ensure_definition(defn)
         @instance_count[key] = (@instance_count[key] || 0) + 1
         {
@@ -994,7 +999,7 @@ module IRIS
           'transform'     => transform_to_a(inst.transformation),
           'material'      => (inst.material ? register_material(inst.material) : nil),
           'layer'         => (inst.layer ? inst.layer.name : nil),
-          'hidden'        => (inst.hidden? rescue false),
+          'hidden'        => hidden,
         }
       end
 
@@ -1014,6 +1019,14 @@ module IRIS
         # 그리지 않습니다. 그리면 조명 앞에 작은 물체가 떠서 빛을 가립니다.
         # 대신 인스턴스마다 광원 노드를 만듭니다 — 위치와 방향은 그 인스턴스의
         # 변환에서 나오므로 씬 그래프가 알아서 합성합니다.
+        # Enscape 원격 자산 — 실물이 .skp 안에 없습니다. 자세한 이유는
+        # IRIS::Enscape.asset 주석. 그릴 수 없으니 세어서 알립니다.
+        begin
+          @definitions[key]['enscape_remote'] = true if IRIS::Enscape.remote_asset?(defn)
+        rescue StandardError
+          nil
+        end
+
         spec = light_spec(defn)
         if spec
           @definitions[key]['light']         = spec
@@ -1546,6 +1559,17 @@ module IRIS
         w << "     인스턴스 수   : #{insts}"
         w << format('     재사용률      : %.2f 인스턴스/정의', reuse)
         w << "     스킵된 그룹   : #{@stats['groups_skipped']}"
+        if @stats['instances_hidden'].to_i > 0
+          # 보내지만 렌더러가 안 그립니다. 숨은 가지 아래도 전부입니다.
+          w << "     숨김 인스턴스 : #{@stats['instances_hidden']} (렌더러가 건너뜁니다)"
+        end
+        rem = @definitions.each_value.select { |d| d['enscape_remote'] }
+        unless rem.empty?
+          n = rem.sum { |d| d['instance_count'].to_i }
+          w << "     Enscape 원격 자산 : #{rem.size}종 / #{n}개 — **그릴 수 없습니다**"
+          w << '                     (실물이 Enscape 라이브러리에 있고 파일에는 껍데기만)'
+          rem.first(5).each { |d| w << "                       #{d['name']}" }
+        end
         w << ''
         w << ' [3] 머티리얼'
         w << "     고유 머티리얼 : #{@materials.size}"
@@ -1656,7 +1680,7 @@ module IRIS
           'textures_exported' => 0, 'textures_reused' => 0, 'texture_errors' => 0,
           'defs_extracted' => 0, 'defs_cached' => 0, 'lights_defs' => 0,
           'kids_reused' => 0, 'kids_rescanned' => 0, 'back_faces' => 0,
-          'materials_refreshed' => 0,
+          'materials_refreshed' => 0, 'instances_hidden' => 0,
         }
         @definitions    = {}
         @materials      = {}
