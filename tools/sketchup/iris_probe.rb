@@ -534,6 +534,9 @@ module IRIS
         # 씬 전체를 반환하면 Ruby 콘솔이 그 해시를 통째로 에코하다가 몇 분간 얼어붙는다.
         # (정점 15만 개가 전부 텍스트가 된다.) 요약만 돌려주고 씬은 last_scene으로 꺼낸다.
         @scene = scene
+        # 이 씬이 **어느 모델의 것인지** 기억합니다. 재사용 경로가 이걸
+        # 보고 남의 씬을 내주는 것을 막습니다 (scene_model_ok? 참고).
+        @scene_model_key = scene_model_key(model)
         {
           'stats'     => @stats,
           'elapsed_s' => @elapsed.round(3),
@@ -546,6 +549,28 @@ module IRIS
       # run이 만든 씬 해시. 콘솔에 그대로 찍지 말 것.
       def last_scene
         @scene
+      end
+
+      # **재사용은 같은 모델 안에서만.**
+      #
+      # 다른 파일을 열면 @scene 은 남의 것입니다. 그대로 내주면 이전 모델을
+      # 다시 보내게 됩니다 — 실제로 그랬습니다. 링크가 "모델이 바뀌었습니다"
+      # 를 찍고 full=true 로 올렸는데도 태양 재사용 경로가 그대로 돌아,
+      # 골프존 실내(삼각형 400,008)를 실외 모델 자리에 다시 보냈습니다.
+      # 오류는 안 납니다 — 렌더러가 엉뚱한 씬을 조용히 그립니다.
+      #
+      # 링크에도 같은 판정이 있지만 여기서도 막습니다. 재사용은 위험한
+      # 지름길이라 문을 두 군데 답니다.
+      def scene_model_ok?(model)
+        return false unless @scene
+        @scene_model_key && @scene_model_key == scene_model_key(model)
+      end
+
+      def scene_model_key(model)
+        path = (model.path.to_s rescue '')
+        path.empty? ? "guid:#{(model.guid rescue model.object_id)}" : "path:#{path}"
+      rescue StandardError
+        nil
       end
 
       # -------------------------------------------------------- 바이너리 직렬화
@@ -713,7 +738,7 @@ module IRIS
       # 합니다(Link#tick 의 dirty.empty? && !mats). 아니면 편집이 조용히
       # 안 나갑니다.
       def refresh_sun(model)
-        return nil unless @scene
+        return nil unless scene_model_ok?(model)
         @scene['sun'] = (@sun = collect_sun(model))
         @run_phase = { walk: 0.0, sun: 0.0, reused: true }
         @scene
@@ -732,7 +757,8 @@ module IRIS
       # ⚠ 부르는 쪽이 **무효화된 정의가 하나도 없음을 확인했을 때만** 써야
       #   합니다(Link#tick 의 dirty.empty?). 아니면 편집이 조용히 안 나갑니다.
       def refresh_materials(model)
-        return nil unless @scene && @materials && @cache
+        return nil unless scene_model_ok?(model)
+        return nil unless @materials && @cache
         list = @scene['materials']
         return nil unless list.is_a?(Array)
 

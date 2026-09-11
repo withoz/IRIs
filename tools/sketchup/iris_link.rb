@@ -114,6 +114,11 @@ module IRIS
           @sent_gen = {}
           @last_sig = nil
           full = true
+          # **재사용도 버립니다.** 이걸 빠뜨려서 한 번 당했습니다 —
+          # full=true 로 올려 놓고도 태양 재사용 경로가 그대로 돌아 이전
+          # 모델의 씬(삼각형 400,008)을 다시 보냈습니다. 렌더러는 오류 없이
+          # 엉뚱한 씬을 그렸고, 화면이 비어서야 알았습니다.
+          reuse = nil
         end
         @model_key = key
 
