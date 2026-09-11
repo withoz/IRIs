@@ -84,6 +84,20 @@ namespace iris::protocol
         float                radiance  = 0.0f;   // cd/m^2 — rect/linear 면광원
         std::string          iesFile;            // 진단용 파일명
 
+        // **IES 배광 격자.** 0..1 (최댓값이 1), 폭 = 세로각, 높이 = 가로각.
+        //
+        // 셰이더가 그렇게 읽습니다(LightShaping.hlsli):
+        //   u = acos(dot(dir, axis)) / pi        -> 세로각 0..180도
+        //   v = atan2(y, x) / (2pi) + 0.5        -> 가로각 -180..180도
+        // 뒤집으면 배광이 90도 돌아간 채 그럴듯하게 나옵니다.
+        //
+        // 비어 있으면 원뿔 근사로 갑니다. 실측(Bega 8331 WIDE): 원뿔 근사는
+        // 세로 최대오차 0.190, 가로 비대칭 0.809 를 통째로 놓칩니다.
+        std::vector<float>   iesGrid;
+        uint32_t             iesNV   = 0;
+        uint32_t             iesNH   = 0;
+        float                iesAsym = 0.0f;     // 진단용
+
         [[nodiscard]] bool Valid() const { return kind != Kind::None; }
     };
 

@@ -739,6 +739,33 @@ namespace iris::bridge
                 intensity = spec.radiance * a;   // L * A = 축상 광도
             }
 
+            // **IES 배광이 있으면 원뿔이 그것을 두 번 자르지 않게 합니다.**
+            //
+            // 셰이더는 `softSpotlight * iesMultiplier` 로 곱합니다
+            // (LightShaping.hlsli). 배광에서 유도한 원뿔(바깥 54.3도)을 그대로
+            // 두면 그 바깥의 배광이 잘려 나갑니다 — Bega 8331 은 55~80도에도
+            // 빛이 있습니다(실측 0.094 ~ 0.002).
+            //
+            // 그래서 원뿔을 배광이 닿는 끝까지 넓히고, 모양은 배광에 맡깁니다.
+            // 원뿔은 광원 선택의 경계(ConeOfInfluence)로만 남습니다.
+            bool hasIes = false;
+            if (!area && !spec.iesGrid.empty() && m_iesApplier)
+            {
+                const std::string key = spec.iesFile.empty()
+                    ? ("grid" + std::to_string(spec.iesGrid.size()))
+                    : spec.iesFile;
+                hasIes = m_iesApplier(*light, key, spec.iesGrid.data(),
+                                      spec.iesNV, spec.iesNH);
+                if (hasIes && m_iesKeys.insert(key).second)
+                    ++stats.iesProfiles;
+                if (hasIes)
+                {
+                    outer = 89.0f;   // 배광이 닿는 끝까지. 모양은 배광이 정합니다
+                    inner = 0.0f;
+                    ++stats.iesLights;
+                }
+            }
+
             // ⚠ RTXPT 는 radius == 0 인 스포트라이트를 가정하지 않습니다
             // (LightsBaker.cpp 의 assert(false) — "not tested with radius == 0").
             // 0 이면 kPoint 경로로 빠지면서 원뿔 성형도 적용되지 않습니다.

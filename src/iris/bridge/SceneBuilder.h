@@ -16,6 +16,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <set>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -61,6 +62,8 @@ namespace iris::bridge
         size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)
         size_t   emissiveMaterials = 0;   // Enscape 자체발광
         size_t   areaLights        = 0;   // 발광 지오메트리로 낸 면광원
+        size_t   iesProfiles       = 0;   // 텍스처로 구운 IES 배광 (고유 개수)
+        size_t   iesLights         = 0;   // 그 배광을 쓰는 광원 수
         size_t   specularOverrides = 0;   // Specular 가 0.5 가 아닌 재질
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
@@ -174,6 +177,27 @@ namespace iris::bridge
         };
         void SetMeshCache(std::shared_ptr<MeshCache> cache) { m_meshCache = std::move(cache); }
 
+        // **IES 배광을 텍스처로 굽는 일은 엔진이 합니다.**
+        //
+        // SceneBuilder 는 장치를 모릅니다(텍스처도 SetTextureLoader 로 받습니다).
+        // 같은 방식으로, 격자를 넘기면 bindless 색인을 돌려주는 함수를 받습니다.
+        // 색인이 -1 이면 원뿔 근사로 돌아갑니다.
+        //
+        // 굽기와 **광원에 달기**를 한 번에 맡깁니다. 색인을 받아 SpotLightEx 에
+        // 넣으려면 브리지가 엔진 타입을 알아야 하는데, 그러면 순환 의존입니다
+        // (IrisScene 이 엔진 안에 있는 이유와 같습니다).
+        //
+        // key 는 같은 배광을 두 번 굽지 않으려는 것입니다 — 골프존 모델은
+        // 정의 4종이 같은 Bega 8331 하나를 씁니다. 캐시도 엔진이 듭니다.
+        //
+        // 참이면 배광이 달렸다는 뜻이고, 그때는 원뿔을 넓혀 배광이 잘리지
+        // 않게 합니다.
+        using IesApplier = std::function<bool(donut::engine::SpotLight& light,
+                                              const std::string& key,
+                                              const float* data,
+                                              uint32_t width, uint32_t height)>;
+        void SetIesApplier(IesApplier f) { m_iesApplier = std::move(f); }
+
         // **면광원을 발광 지오메트리로 낼 것인가.**
         //
         // 지금 기본은 근사입니다 — 사각·선형을 88도 원뿔 + 등가 면적의 구면
@@ -237,6 +261,8 @@ namespace iris::bridge
                                                               BuildStats& stats);
 
         bool m_areaLightGeometry = true;
+        IesApplier m_iesApplier;
+        std::set<std::string> m_iesKeys;   // 고유 배광 개수 세기
         // 라디언스·색이 같으면 같은 메시를 씁니다. 단위 사각형 하나를
         // 인스턴스마다 (w, l, 1) 로 늘려 쓰므로 BLAS 도 재사용됩니다.
         std::unordered_map<std::string, std::shared_ptr<donut::engine::MeshInfo>> m_areaQuads;

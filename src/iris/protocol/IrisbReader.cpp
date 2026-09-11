@@ -113,6 +113,40 @@ namespace iris::protocol
             return (f > 0.0f && std::isfinite(f)) ? f : 0.0f;
         }
 
+        // **IES 배광 격자.** 크기가 안 맞으면 통째로 버리고 원뿔로 갑니다.
+        //
+        // 반쯤 읽은 격자를 쓰면 배광이 조용히 이상해집니다 — 오류도 안 나고
+        // 화면은 그럴듯합니다. 그런 종류를 이 프로젝트에서 여러 번 겪었으므로
+        // **다 맞을 때만** 받습니다.
+        void ReadIesGrid(const Json::Value& lv, LightSpec& out)
+        {
+            const Json::Value& g = lv["ies_grid"];
+            if (!g.isArray() || g.empty())
+                return;
+
+            const uint32_t nv = static_cast<uint32_t>(GetFloat(lv, "ies_nv", 0.0f));
+            const uint32_t nh = static_cast<uint32_t>(GetFloat(lv, "ies_nh", 0.0f));
+            if (nv < 2 || nh < 1 || nv > 4096 || nh > 4096)
+                return;
+            if (static_cast<uint64_t>(nv) * nh != g.size())
+                return;
+
+            std::vector<float> grid;
+            grid.reserve(g.size());
+            for (Json::ArrayIndex i = 0; i < g.size(); ++i)
+            {
+                const float f = g[i].isNumeric() ? g[i].asFloat() : -1.0f;
+                if (!std::isfinite(f) || f < 0.0f)
+                    return;                 // 하나라도 이상하면 안 씁니다
+                grid.push_back(f);
+            }
+
+            out.iesGrid = std::move(grid);
+            out.iesNV   = nv;
+            out.iesNH   = nh;
+            out.iesAsym = GetFloat(lv, "ies_asym", 0.0f);
+        }
+
         template <size_t N>
         bool ReadVec(const Json::Value& v, std::array<float, N>& out)
         {
@@ -149,6 +183,7 @@ namespace iris::protocol
             out.length    = PositiveFinite(lv, "length");
             out.radiance  = PositiveFinite(lv, "radiance");
             out.iesFile   = GetString(lv, "ies_file");
+            ReadIesGrid(lv, out);
 
             // 반각. 0 이나 90 이상은 원뿔이 아니므로 안전한 범위로 좁힙니다.
             const float outer = GetFloat(lv, "outer", 45.0f);
