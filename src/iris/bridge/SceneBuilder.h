@@ -65,6 +65,9 @@ namespace iris::bridge
         size_t   iesProfiles       = 0;   // 텍스처로 구운 IES 배광 (고유 개수)
         size_t   iesLights         = 0;   // 그 배광을 쓰는 광원 수
         size_t   specularOverrides = 0;   // Specular 가 0.5 가 아닌 재질
+        size_t   invisibleMaterials = 0;  // 알파 0 — 호스트에서 안 보임
+        size_t   authorGlass        = 0;  // Enscape 가 유리라고 한 것
+        size_t   authorOpacity      = 0;  // Enscape 불투명도가 SketchUp 알파를 덮은 것
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
@@ -224,6 +227,16 @@ namespace iris::bridge
         // 빛이 막히는 일도 없었습니다. **켜는 것이 기본입니다.**
         // 끄려면 IRIS_AREA_LIGHTS=0.
         void SetAreaLightGeometry(bool on) { m_areaLightGeometry = on; }
+
+        // **유리의 거칠기.**
+        //
+        // SketchUp 은 거칠기를 주지 않습니다. Enscape 값이 있으면 그걸 쓰고,
+        // 없을 때 무엇으로 둘지가 남습니다. 지금까지 0.05(연마 판유리)로
+        // 박혀 있었는데 **근거가 없습니다** — 재고 정한 값이 아닙니다.
+        //
+        // 숨은 상수로 두는 대신 밖으로 뺍니다. 프로젝트마다 커튼월이 맑은
+        // 유리일 수도, 반투명 스크린일 수도 있습니다.
+        void SetGlassRoughness(float r) { m_glassRoughness = (r < 0.0f) ? 0.0f : (r > 1.0f ? 1.0f : r); }
         [[nodiscard]] bool AreaLightGeometry() const { return m_areaLightGeometry; }
 
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
@@ -260,7 +273,8 @@ namespace iris::bridge
         std::shared_ptr<donut::engine::MeshInfo> AreaQuadMesh(const protocol::LightSpec& spec,
                                                               BuildStats& stats);
 
-        bool m_areaLightGeometry = true;
+        bool  m_areaLightGeometry = true;
+        float m_glassRoughness    = 0.05f;
         IesApplier m_iesApplier;
         std::set<std::string> m_iesKeys;   // 고유 배광 개수 세기
         // 라디언스·색이 같으면 같은 메시를 씁니다. 단위 사각형 하나를

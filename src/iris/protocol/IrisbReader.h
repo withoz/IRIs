@@ -143,7 +143,14 @@ namespace iris::protocol
         float roughness = 0.5f;
         float metalness = 0.0f;
         float specular  = 0.5f;         // glTF 의 반사율 스케일과 같은 뜻
-        float opacity   = 1.0f;
+        // ⚠ **미지정과 '명시적으로 1'을 구별해야 합니다.**
+        //
+        // 기본값을 1.0 으로 두면 Enscape 설정은 있는데 Opacity 항목이 없는
+        // 재질이 "저작자가 불투명이라고 했다"로 읽힙니다. 그러면 SketchUp 에서
+        // 반투명인 재질이 통째로 불투명해집니다.
+        //
+        // 음수면 미지정입니다.
+        float opacity   = -1.0f;
         float ior       = 0.0f;         // 0 이면 미지정
         float bump      = 0.0f;
         float normalIntensity = 0.0f;

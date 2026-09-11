@@ -193,9 +193,26 @@ namespace iris::bridge
         {
             auto m = m_typeFactory->CreateMaterial();
             m->name    = ToNativeNarrow(sm.name.empty() ? sm.id : sm.name);
-            m->opacity = sm.alpha;
 
             const bool hasTexture = sm.hasTexture && !sm.texture.exportPath.empty();
+            const bool ePbr       = sm.pbr.present;
+
+            // **불투명도는 저작자의 값이 우선입니다.**
+            //
+            // SketchUp 의 알파는 뷰포트 표시용이고, Enscape 로 작업된 모델은
+            // Enscape 화면이 기준입니다. 둘이 다르면 저작자가 Enscape 에서
+            // 고친 쪽이 맞습니다.
+            //
+            // ⚠ `opacity` 가 음수면 **미지정**입니다. 기본값 1 로 두면 Opacity
+            //   항목이 없는 Enscape 재질이 전부 불투명으로 뒤집힙니다
+            //   (IrisbReader.h 의 주석).
+            float alpha = sm.alpha;
+            if (ePbr && sm.pbr.opacity >= 0.0f && sm.pbr.opacity != sm.alpha)
+            {
+                alpha = sm.pbr.opacity;
+                ++stats.authorOpacity;
+            }
+            m->opacity = alpha;
 
             // **텍스처가 있으면 기본색은 흰색입니다.**
             //
@@ -214,7 +231,6 @@ namespace iris::bridge
 
             // Enscape 가 남긴 값이 있으면 그것이 정답입니다 — 설계자가 직접
             // 정한 값이고, 우리가 추측한 고정값보다 언제나 낫습니다.
-            const bool ePbr = sm.pbr.present;
             if (ePbr)
             {
                 m->roughness = sm.pbr.roughness;
@@ -238,28 +254,51 @@ namespace iris::bridge
                 }
             }
 
-            if (sm.alpha < 0.999f && !hasTexture)
+            // **완전히 투명하면 안 보이는 것이 맞습니다.**
+            //
+            // SketchUp 에서 알파 0 은 화면에 그려지지 않습니다. 그것을 유리로
+            // 바꾸면 프레넬 반사가 남아 **호스트에 없는 것이 보입니다.**
+            // 세종 모델에 그런 재질이 둘(201곳 이상) 있었습니다.
+            //
+            // 지오메트리는 지우지 않습니다 — 델타 추적과 재질 상속이 버킷
+            // 순서 위에서 돌아갑니다. 재질만 안 보이게 둡니다.
+            constexpr float kInvisible = 0.002f;
+
+            // **유리인가.** 저작자가 말했으면 그대로, 아니면 알파 휴리스틱.
+            //
+            // 휴리스틱: 건축 모델에서 알파가 걸린 단색 재질은 거의 항상
+            // 유리입니다. AlphaBlended 로 두면 굴절도 반사도 없는 '유령'처럼
+            // 보입니다. 텍스처가 있는 반투명은 잎사귀 컷아웃일 수 있어
+            // 그대로 둡니다.
+            //
+            // ⚠ 휴리스틱일 뿐입니다. 세종 모델에는 `C01 색`·`L16 색` 처럼
+            //   마감 코드 이름을 단 반투명 재질이 섞여 있고, 그런 것도 유리로
+            //   휩쓸립니다. Enscape 값이 있으면 그쪽이 이깁니다.
+            const bool authorGlass = ePbr && sm.pbr.solidGlass;
+            const bool glass       = authorGlass || (alpha < 0.999f && !hasTexture);
+
+            if (alpha <= kInvisible && !authorGlass)
             {
-                // **반투명한데 텍스처가 없으면 유리로 봅니다.**
-                //
-                // 건축 모델에서 알파가 걸린 단색 재질은 거의 항상 유리입니다
-                // (이 모델에도 'Translucent Glass', 'black glass' 가 있습니다).
-                // AlphaBlended 로 두면 굴절도 반사도 없는 '유령'처럼 보입니다.
-                // 패스트레이서가 유리를 제대로 그릴 수 있는데 그러지 않을 이유가
-                // 없습니다.
-                //
-                // 텍스처가 있는 반투명은 잎사귀 컷아웃일 수 있어 그대로 둡니다.
+                m->domain  = de::MaterialDomain::AlphaBlended;
+                m->opacity = 0.0f;
+                ++stats.invisibleMaterials;
+            }
+            else if (glass)
+            {
                 m->domain             = de::MaterialDomain::Transmissive;
-                m->transmissionFactor = 1.0f - sm.alpha;
-                // 유리도 Enscape 값이 있으면 그쪽을 씁니다. 없을 때만 0.05.
-                m->roughness          = ePbr ? sm.pbr.roughness : 0.05f;
+                m->transmissionFactor = 1.0f - alpha;
+                // 거칠기는 Enscape 값이 있으면 그쪽, 없으면 설정값
+                // (SetGlassRoughness — 기본 0.05, 근거 없는 값이라 밖으로 뺐습니다).
+                m->roughness          = ePbr ? sm.pbr.roughness : m_glassRoughness;
                 m->opacity            = 1.0f;   // 투과로 표현하므로 불투명도는 되돌립니다
                 ++stats.glassMaterials;
+                if (authorGlass)
+                    ++stats.authorGlass;
             }
             else
             {
-                m->domain = (sm.alpha < 0.999f) ? de::MaterialDomain::AlphaBlended
-                                                : de::MaterialDomain::Opaque;
+                m->domain = (alpha < 0.999f) ? de::MaterialDomain::AlphaBlended
+                                             : de::MaterialDomain::Opaque;
             }
 
             if (hasTexture && (m_textureCache || m_textureLoader))

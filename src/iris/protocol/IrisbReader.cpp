@@ -517,7 +517,9 @@ namespace iris::protocol
                 pbr.roughness = Clamp01(GetFloat(pv, "roughness", 0.5f));
                 pbr.metalness = Clamp01(GetFloat(pv, "metalness", 0.0f));
                 pbr.specular  = Clamp01(GetFloat(pv, "specular", 0.5f));
-                pbr.opacity   = Clamp01(GetFloat(pv, "opacity", 1.0f));
+                // 음수 = 미지정. Clamp01 을 먼저 태우면 그 구별이 죽습니다.
+                const float op = GetFloat(pv, "opacity", -1.0f);
+                pbr.opacity   = (op < 0.0f) ? -1.0f : Clamp01(op);
                 pbr.ior       = GetFloat(pv, "ior", 0.0f);
                 pbr.bump      = GetFloat(pv, "bump", 0.0f);
                 pbr.normalIntensity = GetFloat(pv, "normal_intensity", 0.0f);
