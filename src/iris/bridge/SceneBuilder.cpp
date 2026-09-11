@@ -751,9 +751,13 @@ namespace iris::bridge
             bool hasIes = false;
             if (!area && !spec.iesGrid.empty() && m_iesApplier)
             {
-                const std::string key = spec.iesFile.empty()
-                    ? ("grid" + std::to_string(spec.iesGrid.size()))
-                    : spec.iesFile;
+                // ⚠ 키에 **크기를 넣습니다.** 파일명만 쓰면 격자 내용이 바뀌어도
+                // 엔진의 프로세스 수명 캐시가 옛 텍스처를 그대로 내줍니다 —
+                // 실제로 128x64 를 128x1 로 바꾼 뒤 그렇게 됐고, 화면은
+                // 그럴듯한 채 옛 배광이 남았습니다.
+                const std::string key =
+                    (spec.iesFile.empty() ? std::string("grid") : spec.iesFile) +
+                    "@" + std::to_string(spec.iesNV) + "x" + std::to_string(spec.iesNH);
                 hasIes = m_iesApplier(*light, key, spec.iesGrid.data(),
                                       spec.iesNV, spec.iesNH);
                 if (hasIes && m_iesKeys.insert(key).second)

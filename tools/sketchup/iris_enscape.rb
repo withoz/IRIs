@@ -40,9 +40,24 @@ module IRIS
     #   u = acos(dot(dir, axis)) / pi          -> 세로각 0..180도
     #   v = atan2(y, x) / (2pi) + 0.5          -> 가로각 -180..180도
     #
-    # 헷갈리면 배광이 90도 돌아간 채로 그럴듯하게 나옵니다.
+    # **높이가 1 인 이유** — 가로각을 쓸 수 없습니다.
+    #
+    # 셰이더는 가로각의 기준을 `BranchlessONB(lightPrimaryAxis)` 로 만듭니다.
+    # 즉 **광원의 방향 벡터 하나**에서 나옵니다. 기구가 자기 축을 중심으로
+    # 얼마나 돌아가 있는지는 어디에도 전달되지 않습니다 —
+    # PolymorphicLightInfoEx 에 PrimaryAxis 는 있어도 접선은 없습니다.
+    #
+    # 그래서 비대칭 배광(Bega 8331 WIDE 는 0.809)을 2차원으로 보내면
+    # **임의의 각도로 돌아간 채** 그려집니다. 그럴듯하고 눈으로는 못 잡습니다.
+    #
+    # 방향을 모를 때 에너지가 맞는 값은 **방위 평균**입니다. 그래서 접습니다.
+    # 실측(Bega 8331 WIDE): 방위 평균 기준으로 원뿔 근사는 최대 0.350,
+    # 지금까지 쓰던 '가로 최댓값'은 0.186 만큼 과다 조명했습니다.
+    #
+    # 기구의 회전이 전달되면 IES_NH 를 되돌리고 2차원으로 보내면 됩니다.
     IES_NV = 128
-    IES_NH = 64
+    IES_NH = 1
+    IES_AZIMUTH_SAMPLES = 64   # 평균을 낼 때 훑는 방위 개수
 
     class << self
       # Luminosity 의 단위.
@@ -282,15 +297,15 @@ module IRIS
       # 밝게 칠합니다. 1차원으로는 담을 수 없습니다.
       def ies_grid(vert, horz, cand, scale, nv, nh, peak)
         return nil if peak <= 0.0
-        out = Array.new(IES_NV * IES_NH, 0.0)
-        IES_NH.times do |hi|
-          hdeg = ((hi + 0.5) / IES_NH - 0.5) * 360.0
-          hf   = fold_h(horz, hdeg)
-          IES_NV.times do |vi|
-            vdeg = (vi + 0.5) / IES_NV * 180.0
-            out[hi * IES_NV + vi] =
-              (ies_at(vert, horz, cand, scale, nv, vdeg, hf) / peak).round(4)
+        out = Array.new(IES_NV, 0.0)
+        IES_NV.times do |vi|
+          vdeg = (vi + 0.5) / IES_NV * 180.0
+          sum  = 0.0
+          IES_AZIMUTH_SAMPLES.times do |k|
+            hdeg = (k + 0.5) / IES_AZIMUTH_SAMPLES * 360.0
+            sum += ies_at(vert, horz, cand, scale, nv, vdeg, fold_h(horz, hdeg))
           end
+          out[vi] = ((sum / IES_AZIMUTH_SAMPLES) / peak).round(4)
         end
         out
       rescue StandardError
