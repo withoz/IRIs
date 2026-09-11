@@ -32,6 +32,18 @@ module IRIS
     # 선형 조명의 가정 두께(m). 면광원으로 낼 때 필요합니다.
     LINEAR_WIDTH_M = 0.02
 
+    # IES 배광 텍스처의 크기.
+    #
+    # ⚠ **폭이 세로각, 높이가 가로각**입니다. 셰이더가 이렇게 읽습니다
+    # (LightShaping.hlsli):
+    #
+    #   u = acos(dot(dir, axis)) / pi          -> 세로각 0..180도
+    #   v = atan2(y, x) / (2pi) + 0.5          -> 가로각 -180..180도
+    #
+    # 헷갈리면 배광이 90도 돌아간 채로 그럴듯하게 나옵니다.
+    IES_NV = 128
+    IES_NH = 64
+
     class << self
       # Luminosity 의 단위.
       #
@@ -106,6 +118,11 @@ module IRIS
             'radius'      => DEFAULT_SPOT_RADIUS_M,
             'intensity'   => axial,
             'ies_file'    => ies_basename(xml),
+            # 배광 격자. 렌더러가 텍스처로 구워 셰이더에 넘깁니다.
+            'ies_grid'    => cone && cone[:grid],
+            'ies_nv'      => IES_NV,
+            'ies_nh'      => IES_NH,
+            'ies_asym'    => cone && cone[:asym],
             'ies_peak_cd' => cone && cone[:peak],
             'ies_flux_lm' => cone && cone[:flux],
             'ies_lamp_lm' => cone && cone[:declared_lm]
@@ -211,7 +228,9 @@ module IRIS
         { inner: fall_angle(vert, prof, peak * 0.5) || 20.0,
           outer: fall_angle(vert, prof, peak * 0.1) || 35.0,
           peak: peak, flux: ies_flux(vert, horz, cand, scale, nv, nh),
-          declared_lm: declared_lm }
+          declared_lm: declared_lm,
+          grid: ies_grid(vert, horz, cand, scale, nv, nh, peak),
+          asym: ies_asymmetry(cand, nv, nh) }
       rescue StandardError
         nil
       end
@@ -252,6 +271,87 @@ module IRIS
           w[k + 1] += d / 2.0
         end
         w
+      end
+
+      # 배광을 고정 크기 격자로 다시 뜹니다. 0..1 (최댓값이 1).
+      #
+      # 왜 필요한가: 지금은 세로 프로파일에서 빔각·필드각만 뽑아 원뿔로
+      # 근사합니다. Bega 8331 WIDE 로 재 보니 **세로 최대오차 0.190**
+      # (30도에서), 그리고 **가로 비대칭 0.809** 입니다. 월워셔라 좌우가
+      # 완전히 다른데 가로 전체의 최댓값을 쓰고 있어서, 좁은 쪽을 2.4배
+      # 밝게 칠합니다. 1차원으로는 담을 수 없습니다.
+      def ies_grid(vert, horz, cand, scale, nv, nh, peak)
+        return nil if peak <= 0.0
+        out = Array.new(IES_NV * IES_NH, 0.0)
+        IES_NH.times do |hi|
+          hdeg = ((hi + 0.5) / IES_NH - 0.5) * 360.0
+          hf   = fold_h(horz, hdeg)
+          IES_NV.times do |vi|
+            vdeg = (vi + 0.5) / IES_NV * 180.0
+            out[hi * IES_NV + vi] =
+              (ies_at(vert, horz, cand, scale, nv, vdeg, hf) / peak).round(4)
+          end
+        end
+        out
+      rescue StandardError
+        nil
+      end
+
+      # IES 대칭 규칙으로 가로각을 파일이 담은 범위 안으로 접습니다.
+      def fold_h(horz, deg)
+        d = deg % 360.0
+        return horz[0] if horz.size == 1          # 회전 대칭
+        last = horz[-1]
+        if last <= 90.0 + 1e-6                     # 사분 대칭 0..90
+          d = 360.0 - d if d > 180.0
+          d = 180.0 - d if d > 90.0
+          return d
+        end
+        if last <= 180.0 + 1e-6                    # 좌우 대칭 0..180
+          d = 360.0 - d if d > 180.0
+          return d
+        end
+        d                                          # 0..360 그대로
+      end
+
+      # 격자 안에서 이중선형 보간. 파일이 안 다루는 세로각은 0 입니다.
+      def ies_at(vert, horz, cand, scale, nv, vdeg, hdeg)
+        return 0.0 if vdeg < vert.first - 1e-6 || vdeg > vert.last + 1e-6
+        vi, vt = axis_pos(vert, vdeg)
+        hi, ht = axis_pos(horz, hdeg)
+        v1 = [vi + 1, nv - 1].min
+        h1 = [hi + 1, horz.size - 1].min
+        at = ->(h, v) { cand[h * nv + v].to_f }
+        c0 = at.call(hi, vi) + (at.call(hi, v1) - at.call(hi, vi)) * vt
+        c1 = at.call(h1, vi) + (at.call(h1, v1) - at.call(h1, vi)) * vt
+        (c0 + (c1 - c0) * ht) * scale
+      end
+
+      def axis_pos(axis, x)
+        return [0, 0.0] if axis.size < 2 || x <= axis.first
+        return [axis.size - 2, 1.0] if x >= axis.last
+        (1...axis.size).each do |i|
+          next unless x <= axis[i]
+          span = axis[i] - axis[i - 1]
+          return [i - 1, span.abs < 1e-9 ? 0.0 : (x - axis[i - 1]) / span]
+        end
+        [axis.size - 2, 1.0]
+      end
+
+      # 가로 비대칭 정도. 0 이면 축대칭이라 1차원으로 충분합니다.
+      def ies_asymmetry(cand, nv, nh)
+        return 0.0 if nh < 2
+        worst = 0.0
+        (0...nv).each do |i|
+          vals = (0...nh).map { |h| cand[h * nv + i].to_f }
+          mx = vals.max
+          next if mx <= 1e-9
+          a = (mx - vals.min) / mx
+          worst = a if a > worst
+        end
+        worst
+      rescue StandardError
+        0.0
       end
 
       # 세기가 처음으로 threshold 아래로 떨어지는 각도를 선형 보간으로.
