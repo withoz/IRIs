@@ -287,6 +287,114 @@ namespace iris::bridge
 
     // ---------------------------------------------------------------- 메시
 
+    // 면광원을 **발광 사각형**으로 냅니다.
+    //
+    // Enscape 프록시의 정면은 로컬 +Z 입니다(BuildLight 주석). 발광 삼각형은
+    // RTXPT 에서 **한쪽만** 빛납니다 —
+    //   `if (cosTheta <= 0.f) return result;`  (PolymorphicLight.hlsli)
+    // 이 성질이 패널과 정확히 맞습니다. 법선을 +Z 로 두면 프록시가 향하는
+    // 쪽으로만 나갑니다. 스포트와 달리 X축 180도 뒤집기가 필요 없습니다.
+    bool SceneBuilder::BuildAreaLightGeometry(const std::shared_ptr<de::SceneGraph>& graph,
+                                              const std::shared_ptr<de::SceneGraphNode>& node,
+                                              const protocol::LightSpec& spec,
+                                              BuildStats& stats)
+    {
+        const float w = spec.width  > 0.0f ? spec.width  : spec.length;
+        const float l = spec.length > 0.0f ? spec.length : spec.width;
+        if (!(w > 1e-6f) || !(l > 1e-6f) || !(spec.radiance > 0.0f))
+            return false;   // 크기나 밝기를 모르면 근사로 돌아갑니다
+
+        auto mesh = AreaQuadMesh(spec, stats);
+        if (!mesh)
+            return false;
+
+        // 단위 사각형을 (w, l, 1) 로 늘립니다. 인스턴스 변환은 건드리지
+        // 않습니다 — 그것은 호스트가 보낸 값이고 델타가 그 위에서 돕니다.
+        auto host = std::make_shared<de::SceneGraphNode>();
+        host->SetName("IRIS_AreaLight");
+        const dquat   idq(1.0, 0.0, 0.0, 0.0);
+        const double3 zero(0.0, 0.0, 0.0);
+        const double3 scale(double(w), double(l), 1.0);
+        host->SetTransform(&zero, &idq, &scale);
+        graph->Attach(node, host);
+        graph->AttachLeafNode(host, m_typeFactory->CreateMeshInstance(mesh));
+
+        ++stats.areaLights;
+        ++stats.instances;
+        // 광속 합계에 같이 넣습니다. 안 넣으면 면광원을 켠 순간 통계가
+        // 1억 3,526만 -> 5,226만 lm 으로 떨어져 **씬이 어두워진 것처럼**
+        // 보입니다. 실제로는 같은 빛이 지오메트리로 옮겨 갔을 뿐입니다.
+        stats.lightLumens += spec.radiance * dm::PI_f * (w * l);
+        return true;
+    }
+
+    // 라디언스·색이 같으면 같은 메시를 돌려줍니다. 사각 광원 39종이라
+    // 메시는 많아야 그만큼입니다.
+    std::shared_ptr<de::MeshInfo> SceneBuilder::AreaQuadMesh(const protocol::LightSpec& spec,
+                                                             BuildStats& stats)
+    {
+        char key[128];
+        std::snprintf(key, sizeof(key), "%.5g|%.4f|%.4f|%.4f",
+                      spec.radiance, spec.color[0], spec.color[1], spec.color[2]);
+        auto it = m_areaQuads.find(key);
+        if (it != m_areaQuads.end())
+            return it->second;
+
+        auto material = m_typeFactory->CreateMaterial();
+        if (!material)
+            return nullptr;
+        material->name = std::string("IRIS_AreaLight_") + key;
+        // 빛만 냅니다. 반사까지 하면 자기 빛을 다시 튕겨 밝기가 올라갑니다.
+        material->baseOrDiffuseColor = float3(0.0f, 0.0f, 0.0f);
+        material->metalness          = 0.0f;
+        material->roughness          = 1.0f;
+        material->emissiveColor      = float3(spec.color[0], spec.color[1], spec.color[2]);
+        // radiance 는 cd/m^2 입니다 (호스트: lm / (pi * A)). Enscape 자체발광
+        // 재질과 같은 단위이므로 같은 배율을 씁니다.
+        material->emissiveIntensity  = spec.radiance * m_photometricScale;
+        material->doubleSided        = false;
+
+        auto mesh     = m_typeFactory->CreateMesh();
+        mesh->name    = material->name;
+        mesh->type    = de::MeshType::Triangles;
+        mesh->buffers = std::make_shared<de::BufferGroup>();
+        auto& b = *mesh->buffers;
+
+        // XY 평면의 단위 사각형, 법선 +Z. 감김은 +Z 에서 봤을 때 반시계입니다.
+        const float3 corners[4] = {
+            float3(-0.5f, -0.5f, 0.0f), float3(0.5f, -0.5f, 0.0f),
+            float3( 0.5f,  0.5f, 0.0f), float3(-0.5f, 0.5f, 0.0f) };
+        const float2 uvs[4] = { float2(0,0), float2(1,0), float2(1,1), float2(0,1) };
+        const uint32_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+        const uint32_t nz = vectorToSnorm8(float3(0.0f, 0.0f, 1.0f));
+
+        for (int i = 0; i < 4; ++i)
+        {
+            b.positionData.push_back(corners[i]);
+            b.normalData.push_back(nz);
+            b.texcoord1Data.push_back(uvs[i]);
+        }
+        b.indexData.assign(idx, idx + 6);
+
+        auto geom = m_typeFactory->CreateMeshGeometry();
+        geom->type               = de::MeshGeometryPrimitiveType::Triangles;
+        geom->indexOffsetInMesh  = 0;
+        geom->vertexOffsetInMesh = 0;
+        geom->numIndices         = 6;
+        geom->numVertices        = 4;
+        geom->material           = material;
+        geom->objectSpaceBounds  = box3(float3(-0.5f, -0.5f, 0.0f), float3(0.5f, 0.5f, 0.0f));
+        mesh->geometries.push_back(geom);
+        mesh->totalIndices  = 6;
+        mesh->totalVertices = 4;
+        mesh->objectSpaceBounds = geom->objectSpaceBounds;
+
+        ++stats.meshes;
+        ++stats.geometries;
+        m_areaQuads[key] = mesh;
+        return mesh;
+    }
+
     std::shared_ptr<de::MeshInfo> SceneBuilder::BuildMesh(const protocol::Scene& src,
                                                           const protocol::Definition& def,
                                                           BuildStats& stats)
@@ -561,6 +669,13 @@ namespace iris::bridge
         // 입체각이 거의 정확히 pi 라서 램버시안 패널의 축상 광도와 맞습니다.
         // 지오메트리로 내는 것은 뒤로 미룹니다. 두 종류 합쳐 52개 중 5개입니다.
         const bool  area   = (spec.kind == Kind::Rect || spec.kind == Kind::Linear);
+
+        // 발광 지오메트리로 낼 수 있으면 그쪽이 물리적으로 맞습니다 — 모양도,
+        // 길쭉함도, 코사인 감쇠도. 켜는 이유와 근사의 한계는 SceneBuilder.h
+        // 의 SetAreaLightGeometry 주석.
+        if (area && m_areaLightGeometry && BuildAreaLightGeometry(graph, node, spec, stats))
+            return;
+
         const bool  isSpot = (spec.kind == Kind::Spot) || area;
 
         auto leaf = m_typeFactory->CreateLeaf(isSpot ? "SpotLight" : "PointLight");

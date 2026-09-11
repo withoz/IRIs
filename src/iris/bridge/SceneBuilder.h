@@ -60,6 +60,7 @@ namespace iris::bridge
         size_t   meshesReused   = 0;   // 델타: 다시 만들지 않고 재사용한 정의
         size_t   meshesMissing  = 0;   // 델타: 재사용해야 하는데 캐시에 없던 것 (전체 재동기화 필요)
         size_t   emissiveMaterials = 0;   // Enscape 자체발광
+        size_t   areaLights        = 0;   // 발광 지오메트리로 낸 면광원
         size_t   specularOverrides = 0;   // Specular 가 0.5 가 아닌 재질
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
@@ -173,6 +174,34 @@ namespace iris::bridge
         };
         void SetMeshCache(std::shared_ptr<MeshCache> cache) { m_meshCache = std::move(cache); }
 
+        // **면광원을 발광 지오메트리로 낼 것인가.**
+        //
+        // 지금 기본은 근사입니다 — 사각·선형을 88도 원뿔 + 등가 면적의 구면
+        // 광원으로 냅니다. 그 근사는 생각보다 정확합니다: LightsBaker 가
+        // 반지름이 0 이 아닌 스포트를 kSphere 로 바꾸면서 라디언스를
+        // `intensity / (pi r^2)` 로 계산하므로, r = sqrt(A/pi) 를 주면
+        // **투영 면적과 라디언스가 정확히 맞고** 부드러운 그림자도 나옵니다.
+        //
+        // 틀리는 것은 셋입니다.
+        //   모양      — 반사에 원형으로 비칩니다. 사각이어야 합니다.
+        //   길쭉함    — 선형 광원(0.02 x 2 m)이 반지름 0.11 m 공이 됩니다.
+        //   코사인    — 구는 원뿔 안에서 고르게 내보냅니다. 패널은 기울면
+        //               겉보기 면적이 줄어 어두워져야 합니다.
+        //
+        // 발광 지오메트리로 내면 셋 다 맞습니다. 대신 광원이 눈에 보이고,
+        // 기구 안에 들어 있으면 빛이 막힐 수도 있습니다. 어느 쪽이 나은지는
+        // 화면으로만 갈리므로 **찍어서 견줬습니다**(포르쉐 성수 1F 실내,
+        // 3840x2036, 같은 카메라):
+        //
+        //   OFF  천장에 **동그란 빛 웅덩이**  · 31.1 FPS · 분석 광원 777
+        //   ON   천장에 **사각 패널·긴 라인** · 31.5 FPS · 분석 광원 479
+        //
+        // 성능은 같고 조명은 건축 조명처럼 보입니다. 허공에 뜬 사각형도,
+        // 빛이 막히는 일도 없었습니다. **켜는 것이 기본입니다.**
+        // 끄려면 IRIS_AREA_LIGHTS=0.
+        void SetAreaLightGeometry(bool on) { m_areaLightGeometry = on; }
+        [[nodiscard]] bool AreaLightGeometry() const { return m_areaLightGeometry; }
+
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
         std::shared_ptr<donut::engine::SceneGraph> Build(const protocol::Scene& src, BuildStats& stats);
 
@@ -199,6 +228,18 @@ namespace iris::bridge
         std::unordered_map<std::string, std::vector<bool>> m_inherits;
 
         std::shared_ptr<MeshCache> m_meshCache;
+
+        bool BuildAreaLightGeometry(const std::shared_ptr<donut::engine::SceneGraph>& graph,
+                                    const std::shared_ptr<donut::engine::SceneGraphNode>& node,
+                                    const protocol::LightSpec& spec,
+                                    BuildStats& stats);
+        std::shared_ptr<donut::engine::MeshInfo> AreaQuadMesh(const protocol::LightSpec& spec,
+                                                              BuildStats& stats);
+
+        bool m_areaLightGeometry = true;
+        // 라디언스·색이 같으면 같은 메시를 씁니다. 단위 사각형 하나를
+        // 인스턴스마다 (w, l, 1) 로 늘려 쓰므로 BLAS 도 재사용됩니다.
+        std::unordered_map<std::string, std::shared_ptr<donut::engine::MeshInfo>> m_areaQuads;
 
         void BuildMaterials(const protocol::Scene& src, BuildStats& stats);
 
