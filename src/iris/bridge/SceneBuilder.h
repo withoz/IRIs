@@ -68,6 +68,8 @@ namespace iris::bridge
         size_t   invisibleMaterials = 0;  // 알파 0 — 호스트에서 안 보임
         size_t   authorGlass        = 0;  // Enscape 가 유리라고 한 것
         size_t   authorOpacity      = 0;  // Enscape 불투명도가 SketchUp 알파를 덮은 것
+        size_t   cutoutMaterials    = 0;  // 텍스처 알파로 구멍을 내는 재질 (알파 테스트)
+        size_t   cutoutUnmeasured   = 0;  // 그중 프로브가 픽셀을 못 재서 켠 것
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
@@ -237,6 +239,10 @@ namespace iris::bridge
         // 숨은 상수로 두는 대신 밖으로 뺍니다. 프로젝트마다 커튼월이 맑은
         // 유리일 수도, 반투명 스크린일 수도 있습니다.
         void SetGlassRoughness(float r) { m_glassRoughness = (r < 0.0f) ? 0.0f : (r > 1.0f ? 1.0f : r); }
+
+        // 텍스처 알파 채널로 구멍을 낼 것인가(알파 테스트). 기본은 **꺼짐**
+        // 입니다 — 켜면 렌더러가 죽습니다(11번 (a), IrisSettings.h 주석).
+        void SetAlphaCutout(bool on) { m_alphaCutout = on; }
         [[nodiscard]] bool AreaLightGeometry() const { return m_areaLightGeometry; }
 
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
@@ -275,6 +281,7 @@ namespace iris::bridge
 
         bool  m_areaLightGeometry = true;
         float m_glassRoughness    = 0.05f;
+        bool  m_alphaCutout       = false;
         IesApplier m_iesApplier;
         std::set<std::string> m_iesKeys;   // 고유 배광 개수 세기
         // 라디언스·색이 같으면 같은 메시를 씁니다. 단위 사각형 하나를

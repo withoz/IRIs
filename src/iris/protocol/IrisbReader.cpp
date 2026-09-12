@@ -505,6 +505,19 @@ namespace iris::protocol
                 m.texture.exportPath = GetString(t, "export");
                 m.texture.widthM     = GetDouble(t, "width_m");
                 m.texture.heightM    = GetDouble(t, "height_m");
+
+                // 알파는 프로브가 잰 만큼만 옵니다. 항목이 없으면
+                // **미지정(음수)** 으로 둡니다 — 0 으로 두면 "구멍 없음"이
+                // 되어 컷아웃이 막힙니다(Texture 주석).
+                const Json::Value& a = t["alpha"];
+                if (a.isObject())
+                {
+                    m.texture.alphaChannel = a["channel"].isBool() && a["channel"].asBool();
+                    if (a["min"].isNumeric())
+                        m.texture.alphaMin = static_cast<int>(GetInt64(a, "min"));
+                    if (a["holes"].isNumeric())
+                        m.texture.alphaHoles = static_cast<float>(GetDouble(a, "holes", -1.0));
+                }
             }
 
             // Enscape 가 남긴 PBR. 없으면 present=false 로 두고 기존 기본값을 씁니다.

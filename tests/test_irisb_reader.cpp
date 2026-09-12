@@ -303,10 +303,72 @@ int main(int argc, char** argv)
     }
 
     // --- 텍스처 ---
-    size_t textured = 0;
+    size_t textured = 0, alphaCh = 0, cutout = 0, unmeasured = 0;
     for (const auto& m : scene.materials)
-        if (m.hasTexture) ++textured;
-    std::printf("\n텍스처 있는 머티리얼 %zu / %zu\n", textured, scene.materials.size());
+    {
+        if (!m.hasTexture) continue;
+        ++textured;
+        if (m.texture.alphaChannel) ++alphaCh;
+        if (m.texture.NeedsAlphaTest()) ++cutout;
+        if (m.texture.alphaChannel && m.texture.alphaHoles < 0.0f) ++unmeasured;
+    }
+    std::printf("\n텍스처 있는 머티리얼 %zu / %zu · 알파 채널 %zu · 컷아웃 %zu (못 잰 것 %zu)\n",
+                textured, scene.materials.size(), alphaCh, cutout, unmeasured);
+
+    // --- 합성 배선 씬에 심어 둔 텍스처 알파 (있을 때만) ---
+    //
+    // 위의 판정 표는 순수 논리만 봅니다. 여기서는 **JSON 을 실제로 읽었는지**
+    // 를 봅니다 — 항목 이름이 어긋나면 조용히 기본값으로 떨어지고, 그러면
+    // 컷아웃이 전부 사라집니다.
+    for (const auto& m : scene.materials)
+    {
+        if (m.id == "mat_leaf")
+        {
+            Check(m.texture.alphaChannel,            "mat_leaf: 알파 채널을 읽었다");
+            Check(m.texture.alphaMin == 0,           "mat_leaf: 최솟값 0 을 읽었다");
+            Check(m.texture.alphaHoles > 0.38f,      "mat_leaf: 구멍 38.6% 를 읽었다");
+            Check(m.texture.NeedsAlphaTest(),        "mat_leaf: 컷아웃으로 판정");
+        }
+        else if (m.id == "mat_tile")
+        {
+            Check(m.texture.alphaChannel,            "mat_tile: 알파 채널을 읽었다");
+            Check(m.texture.alphaHoles == 0.0f,      "mat_tile: 구멍 0 을 읽었다");
+            Check(!m.texture.NeedsAlphaTest(),       "mat_tile: 컷아웃 아님");
+        }
+        else if (m.id == "mat_bigtex")
+        {
+            Check(m.texture.alphaChannel,            "mat_bigtex: 알파 채널을 읽었다");
+            Check(m.texture.alphaHoles < 0.0f,       "mat_bigtex: 구멍은 미지정으로 남았다");
+            Check(m.texture.NeedsAlphaTest(),        "mat_bigtex: 못 쟀으므로 컷아웃으로 판정");
+        }
+    }
+
+    // --- 알파 테스트 판정 (순수 논리라 파일이 필요 없습니다) ---
+    //
+    // 여기서 틀리면 나뭇잎·타공판의 구멍이 막히거나(끄는 쪽으로 틀림),
+    // 멀쩡한 텍스처에 애니히트 셰이더가 붙습니다(켜는 쪽으로 틀림).
+    // 둘 다 화면으로는 늦게 드러나므로 표로 못박아 둡니다.
+    {
+        std::printf("\n알파 테스트 판정\n");
+        struct Case { bool ch; int mn; float holes; bool want; const char* what; };
+        const Case cases[] = {
+            { false,  -1, -1.0f,   false, "채널 없음 -> 끔" },
+            { false, 255,  0.0f,   false, "채널 없음은 다른 값과 무관" },
+            { true,   -1, -1.0f,   true,  "채널 있고 못 쟀으면 -> 켬 (안전한 쪽)" },
+            { true,  255,  0.0f,   false, "채널 있으나 구멍 없음 -> 끔" },
+            { true,    0,  0.386f, true,  "구멍 38.6% -> 켬 (세종 mat_285 실측)" },
+            { true,    0,  0.0005f,false, "구멍이 표본의 0.05% -> 끔 (잡티)" },
+            { true,  128,  0.002f, true,  "구멍 0.2% -> 켬" },
+        };
+        for (const auto& c : cases)
+        {
+            Texture t;
+            t.alphaChannel = c.ch;
+            t.alphaMin     = c.mn;
+            t.alphaHoles   = c.holes;
+            Check(t.NeedsAlphaTest() == c.want, c.what);
+        }
+    }
 
     // --- 오류 경로 ---
     {

@@ -1481,6 +1481,8 @@ module IRIS
             'width_m'  => ((tex.width * INCH_TO_M) rescue nil),
             'height_m' => ((tex.height * INCH_TO_M) rescue nil),
             'pixels'   => [(tex.image_width rescue nil), (tex.image_height rescue nil)],
+            # 텍스처에 **구멍**이 있는가. 아래 texture_alpha_stats 주석 참조.
+            'alpha'    => texture_alpha_stats(tex),
           } : nil,
         }
 
@@ -1652,6 +1654,82 @@ module IRIS
           @texture_error_msg ||= e.message
           nil
         end
+      end
+
+      # 텍스처에 **구멍**이 있는가.
+      #
+      # 왜: 나뭇잎·난간·타공판의 구멍은 재질 알파(Material#alpha)가 아니라
+      # **텍스처의 알파 채널**에 있습니다. 재질 알파는 1.0 이라 그것만 보면
+      # "불투명"으로 읽히고, 수신부가 구멍을 막은 채 그립니다.
+      # 세종 모델이 내보낸 텍스처 16개 중 12개가 알파 채널을 갖고 있고,
+      # 그중 하나는 픽셀의 38.6%가 완전 투명합니다(11번 (a)).
+      #
+      # 두 단계로 봅니다.
+      #   1) 채널이 아예 없으면 끝입니다 — bits_per_pixel 하나만 읽습니다.
+      #   2) 있으면 **행을 골라** 픽셀을 훑습니다.
+      #
+      # 읽는 법은 짐작하지 않고 쟀습니다(iris_texalpha_diag.rb). 알아낸 것:
+      #
+      #   - `ImageRep#resize` 는 **없습니다**(SketchUp 2026). 줄여서 보려던
+      #     첫 판이 여기서 통째로 막혔습니다. 있는 메서드는 bits_per_pixel,
+      #     color_at_uv, colors, data, height, load_file, row_padding,
+      #     save_file, set_data, size, width 뿐입니다.
+      #   - `#data` 는 원시 바이트를 그대로 줍니다. 617x490 짜리 1.2 MB 를
+      #     0.8 ms 에 돌려줍니다 — `#colors` 와 달리 Color 객체를 안 만듭니다.
+      #   - **알파는 픽셀당 4바이트 중 4번째**입니다. 정답을 아는 텍스처
+      #     (Perforated Panel2, PNG 를 따로 디코딩해 38.6% 투명)로 맞췄습니다:
+      #     3번 바이트는 33.4%·최솟값 0, 0번 바이트는 100%·최솟값 53(색).
+      #
+      # **행 단위로 표본을 뽑습니다.** 일정 간격으로 픽셀을 건너뛰면
+      # 타공판·격자처럼 규칙적인 무늬에서 간격이 행 너비와 맞아떨어져
+      # 같은 자리만 훑을 수 있습니다. 행을 고르고 그 행은 전부 보면
+      # 세로 줄무늬에 걸리지 않습니다.
+      ALPHA_SCAN_ROWS = 64        # 훑을 행 수
+      ALPHA_SCAN_MAX  = 200_000   # 표본 상한
+
+      def texture_alpha_stats(tex)
+        # 내보내는 PNG 와 같은 이미지를 봅니다(색이 입혀진 것).
+        rep = (tex.image_rep(true) rescue nil)
+        return nil unless rep
+        bpp = (rep.bits_per_pixel rescue 24).to_i
+        return { 'channel' => false } if bpp < 32
+
+        w = rep.width.to_i
+        h = rep.height.to_i
+        return { 'channel' => true } if w <= 0 || h <= 0
+
+        data = (rep.data rescue nil)
+        return { 'channel' => true } if data.nil? || data.bytesize < w * h * 4
+
+        stride   = w * 4 + (rep.row_padding rescue 0).to_i
+        rows     = [[h, ALPHA_SCAN_ROWS].min, 1].max
+        row_step = [h / rows, 1].max
+        col_step = [(rows * w) / ALPHA_SCAN_MAX + 1, 1].max
+
+        min   = 255
+        holes = 0
+        n     = 0
+        y = 0
+        while y < h
+          base = y * stride + 3          # +3 = 알파
+          x = 0
+          while x < w
+            b = data.getbyte(base + x * 4)
+            break if b.nil?
+            n += 1
+            holes += 1 if b < 128
+            min = b if b < min
+            x += col_step
+          end
+          y += row_step
+        end
+        return { 'channel' => true } if n.zero?
+
+        { 'channel' => true, 'min' => min,
+          'holes' => (holes.to_f / n).round(4) }
+      rescue StandardError => e
+        @texture_error_msg ||= e.message
+        nil
       end
 
       def transform_to_a(tr)

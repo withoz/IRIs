@@ -129,6 +129,31 @@ namespace iris::protocol
         std::string exportPath;  // 프로브가 내보낸 PNG. 씬 파일 기준 상대경로
         double      widthM  = 0.0;
         double      heightM = 0.0;
+
+        // **텍스처의 구멍.** 프로브가 잰 값입니다(iris_probe.rb
+        // texture_alpha_stats). 나뭇잎·난간·타공판의 구멍은 재질 알파가
+        // 아니라 여기 있습니다 — 재질 알파는 1.0 이라 그것만 보면
+        // "불투명"으로 읽히고 구멍이 막힙니다(11번 (a)).
+        //
+        // ⚠ **못 잰 것과 '구멍 없음'을 구별해야 합니다.** 큰 이미지는
+        //   프로브가 픽셀을 안 봅니다(SketchUp 이 멈춥니다). 0 을 기본값으로
+        //   두면 그런 텍스처가 전부 "구멍 없음"이 됩니다. 음수면 미지정입니다.
+        bool  alphaChannel = false;   // 알파 채널이 있는가
+        int   alphaMin     = -1;      // 표본 최솟값 0~255. 음수면 미지정
+        float alphaHoles   = -1.0f;   // 알파<128 인 표본 비율. 음수면 미지정
+
+        // 알파 테스트(컷아웃)로 그려야 하는가.
+        //
+        // 채널이 없으면 아닙니다. 채널은 있는데 못 쟀으면 **켜는 쪽**이
+        // 안전합니다 — 틀리면 조금 느릴 뿐이지만, 반대로 틀리면 구멍이
+        // 사라집니다. 알파 테스트는 애니히트 셰이더를 부르므로 공짜가
+        // 아니고, 그래서 잴 수 있을 때는 재서 켭니다.
+        [[nodiscard]] bool NeedsAlphaTest() const
+        {
+            if (!alphaChannel)    return false;
+            if (alphaHoles < 0.0f) return true;    // 미지정 — 안전한 쪽
+            return alphaHoles > 0.001f;
+        }
     };
 
     // Enscape 가 남긴 PBR 파라미터.

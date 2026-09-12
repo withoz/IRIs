@@ -137,6 +137,53 @@ def build():
                 "emissive_cd": 5076.72637359386,
             },
         },
+        # --- 텍스처 알파 세 가지 ---------------------------------------
+        #
+        # 컷아웃(나뭇잎·타공판)의 구멍은 재질 알파가 아니라 **텍스처의 알파
+        # 채널**에 있습니다. 셋 다 재질 알파는 1.0 입니다 — 그것만 보면
+        # 전부 불투명으로 읽히는 것이 요점입니다(11번 (a)).
+        #
+        # 실제 모델로만 시험하면 이 값들은 사용자가 편집할 때마다 흔들리고,
+        # 어느 날 조용히 0이 되어도 모릅니다.
+        {
+            "id": "mat_leaf",
+            "name": "leaf cutout",
+            "color": [1.0, 1.0, 1.0],
+            "alpha": 1.0,
+            "type": 1,
+            # 세종 모델 mat_285(617x490, 38.6% 투명)를 본뜬 값
+            "texture": {
+                "file": "leaf.png", "export": "textures/mat_leaf.png",
+                "width_m": 1.0, "height_m": 1.0, "pixels": [617, 490],
+                "alpha": {"channel": True, "min": 0, "holes": 0.386},
+            },
+        },
+        {
+            "id": "mat_tile",
+            "name": "tile (알파 채널은 있으나 구멍 없음)",
+            "color": [1.0, 1.0, 1.0],
+            "alpha": 1.0,
+            "type": 1,
+            "texture": {
+                "file": "tile.png", "export": "textures/mat_tile.png",
+                "width_m": 0.6, "height_m": 0.6, "pixels": [500, 500],
+                "alpha": {"channel": True, "min": 255, "holes": 0.0},
+            },
+        },
+        {
+            "id": "mat_bigtex",
+            "name": "big texture (프로브가 픽셀을 못 잼)",
+            "color": [1.0, 1.0, 1.0],
+            "alpha": 1.0,
+            "type": 1,
+            # 'min'·'holes' 가 없습니다 — 큰 이미지라 프로브가 안 훑은 경우.
+            # 미지정이면 **켜는 쪽**이 안전합니다(IrisbReader.h Texture 주석).
+            "texture": {
+                "file": "big.png", "export": "textures/mat_bigtex.png",
+                "width_m": 4.0, "height_m": 4.0, "pixels": [4096, 4096],
+                "alpha": {"channel": True},
+            },
+        },
     ]
 
     definitions = {

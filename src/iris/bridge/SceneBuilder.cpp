@@ -295,10 +295,39 @@ namespace iris::bridge
                 if (authorGlass)
                     ++stats.authorGlass;
             }
+            else if (alpha < 0.999f)
+            {
+                m->domain = de::MaterialDomain::AlphaBlended;
+            }
+            else if (m_alphaCutout && hasTexture && sm.texture.NeedsAlphaTest())
+            {
+                // **텍스처에 뚫린 구멍을 살립니다.**
+                //
+                // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 텍스처의
+                // 알파 채널에 있습니다. 재질 알파는 1.0 이므로 여기까지
+                // 오면 전부 Opaque 였고, 엔진은 알파 채널을 통째로
+                // 버렸습니다 — 구멍이 막힌 채 그려졌습니다(11번 (a)).
+                //
+                // 세종 모델 실측: 내보낸 텍스처 16개 중 12개가 알파 채널을
+                // 갖고 있고, 그중 하나는 픽셀의 38.6%가 완전 투명합니다.
+                //
+                // 공짜가 아닙니다 — RTXPT 는 알파 테스트 재질에 애니히트
+                // 셰이더를 붙이고(PTPipelineBaker.cpp), BLAS 의 불투명
+                // 최적화를 잃습니다. 그래서 채널이 있다고 다 켜지 않고
+                // **실제로 구멍이 있을 때** 켭니다(Texture::NeedsAlphaTest).
+                // ⚠ 지금은 **기본으로 꺼져 있습니다**(m_alphaCutout). 이
+                //   분기를 타는 재질이 하나라도 있으면 RTXPT 가 씬 적용
+                //   직후 죽습니다. 호스트 절반(측정·전달·판정)은 시험까지
+                //   끝났고, 엔진 쪽 원인은 아직 못 찾았습니다 — 11번 (a).
+                m->domain     = de::MaterialDomain::AlphaTested;
+                m->alphaCutoff = 0.5f;
+                ++stats.cutoutMaterials;
+                if (sm.texture.alphaHoles < 0.0f)
+                    ++stats.cutoutUnmeasured;
+            }
             else
             {
-                m->domain = (alpha < 0.999f) ? de::MaterialDomain::AlphaBlended
-                                             : de::MaterialDomain::Opaque;
+                m->domain = de::MaterialDomain::Opaque;
             }
 
             if (hasTexture && (m_textureCache || m_textureLoader))
