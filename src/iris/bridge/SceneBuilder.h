@@ -316,6 +316,8 @@ namespace iris::bridge
         float m_glassRoughness    = 0.05f;
         bool  m_alphaCutout       = false;
         bool  m_glassThinDefault  = true;
+        // 저장된 재질 덮어쓰기를 모델별로 가르는 키. BuildMaterials 가 채웁니다.
+        std::string m_modelKey;
         IesApplier m_iesApplier;
         std::set<std::string> m_iesKeys;   // 고유 배광 개수 세기
         // 라디언스·색이 같으면 같은 메시를 씁니다. 단위 사각형 하나를

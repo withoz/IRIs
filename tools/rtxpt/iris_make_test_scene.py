@@ -30,7 +30,13 @@ FMT_VER = 1
 #   badcone  원뿔 150도  -> 안전한 반각으로 조여서 **살림**
 EXPECTED = {
     "point_lights": 2,      # PointLight 2개 (negative 는 버려짐)
-    "spot_lights": 4,       # 스포트 2 + 사각 1 + badcone 1
+    # ⚠ 이 값은 **IRIS 설정에 달려 있습니다.**
+    #   "Area lights as emissive geometry" 가 꺼져 있으면 4 입니다
+    #   (스포트 2 + 사각 1 + badcone 1). 켜져 있으면 사각 광원이 발광
+    #   지오메트리가 되어 스포트에서 빠지므로 **3** 입니다.
+    #   기본값이 켬으로 바뀐 뒤에도 4 로 적혀 있어 배선 검사에서 한 번
+    #   어긋난 것처럼 보였습니다 — 배선이 아니라 이 기대값이 낡았습니다.
+    "spot_lights": 4,       # 면광원 변환이 꺼져 있을 때
     "emissive_materials": 1,
     "lumens": 1000.0 * 2 + 20000.0 * 2 + 3000.0 * 1 + 500.0,
 }

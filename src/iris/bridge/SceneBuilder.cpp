@@ -206,6 +206,7 @@ namespace iris::bridge
         // 저장 안 한 모델은 경로가 없으므로 제목으로 갑니다.
         const std::string modelKey =
             ToNativeNarrow(src.sourceFile.empty() ? src.sourceTitle : src.sourceFile);
+        m_modelKey = modelKey;   // 면광원 재질도 같은 규칙을 씁니다
         m_defaultMaterial->modelFileName = modelKey;
 
 
@@ -463,7 +464,12 @@ namespace iris::bridge
         auto material = m_typeFactory->CreateMaterial();
         if (!material)
             return nullptr;
-        material->name = std::string("IRIS_AreaLight_") + key;
+        // 이름에 '|' 가 들어갑니다(키 구분자). Windows 파일명에 못 쓰는
+        // 문자라 재질 저장(.material.json)은 이 재질에서 실패합니다 —
+        // 로그에만 남고 화면에는 영향이 없습니다. 사용자가 조정할 재질도
+        // 아니어서 그대로 둡니다(10번 배선 검사표).
+        material->name          = std::string("IRIS_AreaLight_") + key;
+        material->modelFileName = m_modelKey;   // 다른 재질과 같은 규칙으로
         // 빛만 냅니다. 반사까지 하면 자기 빛을 다시 튕겨 밝기가 올라갑니다.
         material->baseOrDiffuseColor = float3(0.0f, 0.0f, 0.0f);
         material->metalness          = 0.0f;
