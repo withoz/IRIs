@@ -1,0 +1,195 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 18:44:31 +0900
+Subject: [PATCH 40/40] =?UTF-8?q?feat(iris):=20=EC=9E=AC=EC=A7=88=20?=
+ =?UTF-8?q?=EB=8D=AE=EC=96=B4=EC=93=B0=EA=B8=B0=EB=A5=BC=20=EC=97=94?=
+ =?UTF-8?q?=EC=A7=84=20=ED=8A=B8=EB=A6=AC=20=EB=B0=96=EC=9C=BC=EB=A1=9C,?=
+ =?UTF-8?q?=20=ED=85=8D=EC=8A=A4=EC=B2=98=EB=8A=94=20=ED=98=B8=EC=8A=A4?=
+ =?UTF-8?q?=ED=8A=B8=20=EA=B2=83=EC=9C=BC=EB=A1=9C?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+10번 10.5 의 위험 6·7 을 닫습니다.
+
+## (6) 사용자 편집이 엔진을 다시 받으면 날아갔습니다
+
+저장 위치가 `Assets/Materials/` — RTXPT 소스 트리 안입니다. 예제 씬에는
+그것이 맞지만(497개가 거기 함께 배포됩니다) 라이브 링크 사용자의 편집이
+거기 쌓이면 체크아웃을 다시 받는 순간 사라집니다.
+
+  MaterialsBaker::SetIrisOverrideRoot()   비면 엔진 기본 동작 그대로
+  Settings::MaterialOverrideRoot()        %LOCALAPPDATA%\IRIS\materials
+  Sample                                  IRIS 씬일 때만, 재질을 읽기 직전에
+
+읽기는 새·옛 위치를 **둘 다** 봅니다 — 이미 저장해 둔 편집을 잃지 않기
+위해서입니다. 쓰기는 항상 새 위치입니다.
+
+곁가지로 상류 버그 하나: SaveSingle 이 m_materialsPath 만 만들고, 그
+다음 `if (!EnsureDirectoryExists(outPath))` 에 **본문이 없었습니다.**
+엔진 기본 폴더는 이미 있어서 안 드러나던 자리인데, 밖으로 옮기면 그
+폴더는 처음엔 없습니다.
+
+## (7) 저장 파일이 텍스처 경로를 박아 두었습니다
+
+내보내기 이름이 그때그때 달라지는데 저장 파일은 옛 경로를 들고 있습니다.
+엉뚱한 그림을 가리키고 오류 없이 화면만 틀립니다.
+
+소유권으로 갈랐습니다 — **그림은 호스트가, 겉모습 값은 사용자가.**
+저장 파일을 읽은 뒤 텍스처 다섯 칸(Base/ORM/Normal/Emissive/
+Transmission)만 호스트 것으로 되돌립니다. Enable*Texture 깃발은 파일
+것을 그대로 둡니다 — 경로가 아니라 의도입니다.
+
+⚠ IRIS 씬에서만 합니다. 예제 씬의 저장 파일은 그 자체가 재질 정의이고
+텍스처 경로가 정답입니다.
+
+## 편집기 쪽 (11번 7번)
+
+  * Advanced 가 **실제 저장 폴더**를 표시합니다. 예전에는 라이브 씬에서도
+    엔진 폴더를 찍어 사용자를 엉뚱한 데로 보냈습니다. 경고 두 줄도 같이.
+  * `Save all` 이 라이브 씬에서 **함정**이라는 경고를 띄웁니다. 저장 파일이
+    호스트 값을 이기므로, 전부 저장하면 안 고친 재질까지 오늘의 추측값
+    (거칠기 0.90, 이름 규칙 결과)으로 얼어붙습니다. 나중에 추측을 개선해도
+    화면이 안 바뀌고 이유를 알 수 없습니다. 고친 재질만 개별 Save 로.
+
+## 확인 — 파일을 심어서 왕복시켰습니다
+
+%LOCALAPPDATA%\IRIS\materials 에 stone05(바닥) 덮어쓰기를 심되 **텍스처
+경로를 일부러 없는 파일로** 넣었습니다.
+
+  동기화      로그 `저장된 재질 파일 1개가 호스트 값을 덮었습니다 — '…\IRIS\materials'`
+  화면        바닥이 **붉게 물든 카펫** — 색은 파일 것, 무늬는 호스트 것
+  UI          `1 saved file(s) are overriding SketchUp`
+  되돌리기    대화상자가 새 위치의 파일 이름을 정확히 표시
+  지운 뒤     바닥이 원래 회색 카펫으로 복귀 · `None - SketchUp values are in use.`
+
+무늬가 살아 있는 것이 (7)의 증거입니다. 고치지 않았다면 없는 경로를
+읽으려다 실패해 평평한 빨강이 됐을 것입니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisSettings.h          | 16 +++++++++++++
+ Rtxpt/Materials/MaterialsBaker.cpp | 37 +++++++++++++++++++++++++++---
+ Rtxpt/Sample.cpp                   |  9 ++++++++
+ 3 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+index 2f32282..0192a3d 100644
+--- a/Rtxpt/Iris/IrisSettings.h
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -160,6 +160,22 @@ namespace iris
+ 
+         // ------------------------------------------------------------ 보관
+ 
++        // **재질 덮어쓰기를 둘 곳.**
++        //
++        // 엔진 기본값은 `Assets/Materials/` — 엔진 소스 트리 안입니다.
++        // RTXPT 예제 씬에는 그것이 맞지만(497개가 거기 함께 배포됩니다),
++        // 라이브 링크 사용자의 편집이 거기 쌓이면 **엔진을 다시 받는 순간
++        // 통째로 날아갑니다**(10번 10.5-6).
++        //
++        // 설정 파일과 같은 자리에 둡니다. 비면 엔진 기본 동작 그대로입니다.
++        static std::filesystem::path MaterialOverrideRoot()
++        {
++            const auto p = Path();
++            if (p.empty())
++                return {};
++            return p.parent_path() / "materials";
++        }
++
+         static std::filesystem::path Path()
+         {
+             char*  buf = nullptr;
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index 8e52b43..711d3b2 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -1008,8 +1008,15 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+         // sort by name so when we're saving it's consistent
+         std::sort(m_materials.begin(), m_materials.end(), [](const auto & a, const auto & b) { return a->Name < b->Name; } );
+ 
++        // IRIS: **실제로 저장되는 곳**을 적습니다. 라이브 씬은 엔진 트리
++        // 밖이라(m_irisOverrideRoot) m_materialsPath 를 찍으면 사용자를
++        // 엉뚱한 폴더로 보냅니다.
++        const std::string storageDir =
++            (m_irisOverrideRoot.empty() ? m_materialsPath : m_irisOverrideRoot).string();
++
+         if (initializedFromDonutCount > 0)
+-            donut::log::warning("There were %d materials not found in RTXPT material materials folder '%s'; consider doing Scene->Materials->Advanced->Save", initializedFromDonutCount, m_materialsPath.string().c_str());
++            donut::log::warning("There were %d materials not found in RTXPT material materials folder '%s'; consider doing Scene->Materials->Advanced->Save",
++                                initializedFromDonutCount, storageDir.c_str());
+ 
+         // IRIS: 덮어쓰기는 **조용하면 안 됩니다.** 예전에 저장해 둔 파일 하나가
+         // 남아 있으면, 사용자가 SketchUp 에서 재질을 고쳐도 화면이 안 바뀝니다.
+@@ -1017,7 +1024,7 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+         if (loadedFromFileCount > 0)
+             donut::log::warning("IRIS: 저장된 재질 파일 %d개가 호스트 값을 덮었습니다 — '%s'. "
+                                 "호스트 값으로 되돌리려면 그 파일을 지우십시오.",
+-                                loadedFromFileCount, m_materialsPath.string().c_str());
++                                loadedFromFileCount, storageDir.c_str());
+ 
+         m_deferredTextureLoadInProgress = true;
+     }
+@@ -1364,10 +1371,17 @@ bool MaterialsBaker::DebugGUI(float indent)
+ 
+     if (ImGui::CollapsingHeader("Advanced", 0/*ImGuiTreeNodeFlags_DefaultOpen*/))
+     {
++        // IRIS: **실제로 쓰는 곳**을 보여 줍니다. 라이브 씬은 엔진 트리
++        // 밖에 저장하므로 m_materialsPath 를 그대로 찍으면 거짓말입니다.
++        const bool irisScene = !m_irisOverrideRoot.empty();
+         ImGui::Text("Materials storage directory:");
+         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0, 1.0, 0.5, 1.0));
+-        ImGui::TextWrapped("%s", m_materialsPath.string().c_str());
++        ImGui::TextWrapped("%s", (irisScene ? m_irisOverrideRoot : m_materialsPath).string().c_str());
+         ImGui::PopStyleColor();
++        if (irisScene)
++            ImGui::TextWrapped("(IRIS live scene - kept outside the engine checkout so a "
++                               "re-clone cannot delete your edits. Reading also falls back "
++                               "to %s)", m_materialsPath.string().c_str());
+ 
+         ImGui::Text("Set all SharedWithAllScenes props to");
+         {
+@@ -1383,6 +1397,23 @@ bool MaterialsBaker::DebugGUI(float indent)
+ 
+         if( ImGui::Button("Save all") )
+             SaveAll();
++        // IRIS: 라이브 씬에서 이 단추는 **함정**입니다.
++        //
++        // 저장 파일은 호스트가 보낸 값을 통째로 이깁니다. 전부 저장하면
++        // 안 고친 재질까지 **오늘의 추측값 그대로 얼어붙습니다** — 거칠기
++        // 기본값 0.90, 이름 규칙 결과까지. 나중에 추측을 개선해도 화면이
++        // 안 바뀌고, 사용자는 이유를 알 수 없습니다.
++        //
++        // 고친 재질만 각자의 Save 로 저장하는 것이 맞습니다.
++        if (irisScene)
++        {
++            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.3f, 1.0f));
++            ImGui::TextWrapped("For a live scene prefer the per-material Save button. "
++                               "'Save all' freezes EVERY material at today's values - "
++                               "including guessed roughness - and later improvements to "
++                               "the guesses will silently stop reaching the screen.");
++            ImGui::PopStyleColor();
++        }
+     }
+ 
+     return resetAccumulation;
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 9dc2f2c..b67d15b 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -2223,6 +2223,15 @@ void Sample::Render(nvrhi::IFramebuffer* framebuffer)
+             CreateRTPipelines();
+         }
+ 
++        // IRIS: **라이브 씬의 재질 덮어쓰기는 엔진 체크아웃 밖에 둡니다.**
++        //
++        // 여기서 정해야 합니다 — 바로 아래 CreateRenderPassesAndLoadMaterials
++        // 가 저장 파일을 찾아 읽습니다. 비워 두면 엔진 기본 경로
++        // (Assets/Materials)를 그대로 씁니다. 읽기는 새·옛 위치를 둘 다
++        // 봅니다(MaterialsBaker::Load) — 이미 저장해 둔 편집을 잃지
++        // 않기 위해서입니다. 10번 10.5-6.
++        m_materialsBaker->SetIrisOverrideRoot(IsIrisScene() ? iris::Settings::MaterialOverrideRoot()
++                                                            : std::filesystem::path());
+         m_materialsBaker->CreateRenderPassesAndLoadMaterials(m_bindlessLayout, m_CommonPasses, m_scene, m_currentScenePath, GetLocalPath(c_AssetsFolder));
+         m_progressInitializingRenderer.Set(5);
+         CollectUncompressedTextures();

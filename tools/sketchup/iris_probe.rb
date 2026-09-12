@@ -31,6 +31,7 @@
 
 require 'json'
 require 'fileutils'
+require 'digest/md5'
 
 # Enscape 가 속성 사전에 남긴 조명·재질 설정을 읽습니다.
 # 설계자가 이미 정해 둔 값이므로 추측하지 않습니다.
@@ -55,11 +56,15 @@ module IRIS
     #   6 — 뒷면 재질 면의 UV·법선·감김 교정 (메시 내용이 바뀝니다)
     #   7 — v 뒤집기 (SketchUp 은 아래가 v=0, 렌더러는 위가 v=0)
     #   8 — 메시 내용 서명(msig) 추가 — 변경 감지를 싸게 하려고
+    #   9 — 텍스처 파일 이름이 **그림**으로 정해짐 (mat_<entityID> -> tex_<해시>).
+    #       재질 기록에 `export` 경로가 들어 있어서, 올리지 않으면 캐시가
+    #       **지워진 옛 경로**를 계속 내줍니다. 실제로 그렇게 됐고 렌더러가
+    #       "텍스처를 찾지 못했습니다"를 줄줄이 찍었습니다.
     #
     # ⚠ 번호를 올리는 것을 잊어도 되도록, fetch 가 **필드 목록**도 함께
     #   봅니다(DefCache::CACHE_FIELDS). 실제로 한 번 잊었고 델타가 조용히
     #   꺼졌습니다.
-    CACHE_SCHEMA = 8
+    CACHE_SCHEMA = 9
 
     # 뷰 목록의 첫 항목 이름. 서명에서 빼려면 한 곳에서 정해야 합니다 —
     # 문자열을 두 군데 쓰면 한쪽만 고쳐 놓고 못 알아챕니다.
@@ -444,12 +449,12 @@ module IRIS
         # 텍스처는 지오메트리 수집 중에 뽑히므로 디렉터리를 먼저 만들어 둔다.
         if textures
           begin
-            # ⚠ 모델별로 나눈다. 텍스처 파일명이 mat_<entityID> 인데 entityID 는
-            # 모델마다 다시 매겨지므로, 한 폴더에 섞으면 다른 모델의 텍스처를
-            # 재사용하는 사고가 난다.
+            # 모델별로 나눈다. 이름이 그림으로 정해지므로(texture_key) 섞일
+            # 일은 없지만, 모델별 폴더가 지우기도 쉽고 진단도 쉽다.
             @texture_rel = "textures/#{sanitize(model.title)}"
             @texture_dir = File.join(out_dir || default_out_dir, 'textures', sanitize(model.title))
             FileUtils.mkdir_p(@texture_dir)
+            sweep_old_texture_names
           rescue StandardError => e
             puts "텍스처 폴더 생성 실패, 텍스처 없이 진행합니다: #{e.message}"
             @texture_dir = nil
@@ -1477,7 +1482,7 @@ module IRIS
             'file'     => (tex.filename rescue nil),
             # 실제로 꺼낸 이미지의 상대경로. .skp 안에 임베드된 것을 파일로 뽑아낸 것이라
             # 'file'(원본 파일명)과 달리 **실제로 존재하는 경로**다.
-            'export'   => export_texture(tex, key),
+            'export'   => export_texture(tex, texture_key(mat, tex)),
             'width_m'  => ((tex.width * INCH_TO_M) rescue nil),
             'height_m' => ((tex.height * INCH_TO_M) rescue nil),
             'pixels'   => [(tex.image_width rescue nil), (tex.image_height rescue nil)],
@@ -1617,17 +1622,64 @@ module IRIS
       # image_rep(true) 는 머티리얼 색으로 착색된(colorized) 결과를 준다. SketchUp은
       # 같은 이미지에 색을 입혀 여러 재질을 만들 수 있으므로, 재질별로 따로 뽑아야
       # 화면에서 본 것과 같아진다.
+      # **파일 이름은 그림이 정합니다 — 재질 번호가 아니라.**
+      #
+      # 예전 이름은 `mat_<entityID>.png` 였습니다. 그런데 **entityID 는
+      # 모델을 다시 열 때마다 다시 매겨지고**, 폴더는 모델 **제목**으로만
+      # 갈립니다. 내보내기는 파일이 있으면 다시 쓰지 않으므로, 지난 세션의
+      # 다른 재질 그림이 같은 이름으로 남아 있으면 **그대로 나갑니다.**
+      #
+      # 실측(iris_texmatch.rb, 골프존 모델): 텍스처 있는 재질 51개 중
+      # **9개가 크기부터 달랐습니다** — `stone05` 가 1800x1800(다른 재질의
+      # 카펫)을, `_JAB FABRIC` 이 128x256 을 받았습니다. 크기가 같아도 다른
+      # 그림일 수 있으니 9는 하한입니다. 사용자가 화면을 보고 짚었습니다.
+      #
+      # 그래서 **그림을 결정하는 것들**로만 이름을 짓습니다:
+      #
+      #   원본 파일명 · 픽셀 크기 · 재질 색 · 알파
+      #
+      # 색이 들어가는 이유는 `image_rep(true)` 가 **재질 색을 입혀서** 주기
+      # 때문입니다. 같은 jpg 를 다른 색으로 쓰면 다른 그림입니다.
+      #
+      # 같은 그림이면 파일 하나를 나눠 씁니다 — 캐시 이득은 그대로이고,
+      # 다른 그림이 같은 이름을 받는 일은 없어집니다.
+      # **옛 이름(`mat_<entityID>.png`)을 한 번 치웁니다.**
+      #
+      # 그 이름들은 이제 아무도 안 가리킵니다. 그런데 내용이 **틀린** 채로
+      # 남아 있어서, 나중에 누가 그 폴더를 보고 헷갈리기 딱 좋습니다.
+      # 우리가 쓴 파일이고 out/ 은 우리 작업 폴더이므로 치웁니다.
+      def sweep_old_texture_names
+        return unless @texture_dir
+        old = Dir.glob(File.join(@texture_dir, 'mat_*.png'))
+        return if old.empty?
+        n = 0
+        old.each do |f|
+          next unless File.basename(f) =~ /\Amat_\d+(\.inv)?(\.nrm)?\.png\z/
+          File.delete(f) rescue next
+          n += 1
+        end
+        puts "[IRIS] 옛 이름의 텍스처 #{n}개를 치웠습니다 (이제 이름은 그림이 정합니다)" if n > 0
+      rescue StandardError => e
+        puts "[IRIS] 옛 텍스처 정리 실패(무시): #{e.message}"
+      end
+
+      def texture_key(mat, tex)
+        c = (mat.color rescue nil)
+        sig = [
+          (tex.filename rescue ''),
+          (tex.image_width rescue 0), (tex.image_height rescue 0),
+          c ? [c.red, c.green, c.blue].join(',') : '-',
+          (mat.alpha rescue 1.0),
+        ].join('|')
+        "tex_#{Digest::MD5.hexdigest(sig)[0, 16]}"
+      end
+
       def export_texture(tex, key)
         return nil unless @texture_dir
 
         file = "#{key}.png"
         path = File.join(@texture_dir, file)
         rel  = "#{@texture_rel}/#{file}"
-        # 재질이 바뀌었으면 이미지 자체가 바뀌었을 수 있습니다. 파일이 있다고
-        # 그냥 쓰면 낡은 그림이 남습니다.
-        if stale_material?(key) && File.exist?(path)
-          File.delete(path) rescue nil
-        end
         if File.exist?(path)
           # 이전 실행에서 이미 뽑아둔 것. 다시 쓰되 통계에는 따로 센다 —
           # 이걸 구분하지 않으면 "추출 0개"로 보고돼 실패한 것처럼 보인다.
