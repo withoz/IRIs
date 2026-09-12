@@ -10,6 +10,10 @@
 #   이름만으로는 못 가립니다. 유리일 수도 있고(코드가 유리 사양일 수도
 #   있습니다), 반투명 스크린일 수도 있고, 도면용 표시일 수도 있습니다.
 #
+#   더 자세히 보려면 `iris_body_opaque.rb` 를 쓰십시오 — 면이 어느 쪽을
+#   보는지, 색이 무엇인지, Enscape 설정이 유리로 만드는지까지 보고,
+#   `peek` 로 **잠깐 자홍색으로 칠해** 눈으로 확인할 수 있습니다.
+#
 #   **무엇에 칠해져 있는지**를 보면 갈립니다:
 #     - 큰 수직면 몇 장    -> 커튼월·스크린
 #     - 작은 조각 여럿      -> 몰딩·프레임·디테일
@@ -141,9 +145,14 @@ module IRIS
         [face.material, face.back_material].compact.uniq.each do |m|
           s = @stat[m.entityID]
           next unless s
-          # 넓이는 변환의 배율을 반영해야 합니다. 균일 배율로 근사합니다.
-          sc = (tr.xaxis.length * tr.yaxis.length) rescue 1.0
-          a  = (face.area * sc) * 0.00064516   # 제곱인치 -> m2
+          # 넓이는 **SketchUp 이 주는 변환형**을 씁니다.
+          #
+          # 처음에는 `face.area * (tr.xaxis.length * tr.yaxis.length)` 로
+          # 근사했다가 크게 틀렸습니다. Transformation 은 균일 배율을
+          # 15번째 원소에 숨겨 두므로 xaxis.length 가 1 로 나옵니다 —
+          # 반입 컴포넌트는 거의 항상 그 배율을 씁니다. 차창을 585 m2 로
+          # (실제 6.6), 도어 유리를 0.2 m2 로 (실제 3.1) 읽었습니다.
+          a  = (face.area(tr) rescue face.area) * 0.00064516   # 제곱인치 -> m2
           s[:faces] += 1
           s[:area]  += a
           s[:big]   += 1 if a >= 1.0
