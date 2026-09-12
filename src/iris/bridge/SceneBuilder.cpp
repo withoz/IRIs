@@ -395,7 +395,7 @@ namespace iris::bridge
                 //
                 // IoR·덩어리와 같은 규칙입니다: **유리라고 한 것만 유리 값을
                 // 씁니다.** 나머지는 설정값(Glass roughness)으로 갑니다.
-                m->roughness          = authorGlass ? sm.pbr.roughness : m_glassRoughness;
+                m->roughness          = ePbr ? sm.pbr.roughness : m_glassRoughness;
                 m->opacity            = 1.0f;   // 투과로 표현하므로 불투명도는 되돌립니다
                 ++stats.glassMaterials;
                 if (authorGlass)
