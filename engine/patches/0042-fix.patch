@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 19:22:22 +0900
+Subject: [PATCH 42/42] =?UTF-8?q?fix:=20=EC=9C=A0=EB=A6=AC=EB=B2=BD?=
+ =?UTF-8?q?=EC=9D=B4=20=ED=9D=B0=20=ED=8C=90=EC=9D=B4=EC=97=88=EC=8A=B5?=
+ =?UTF-8?q?=EB=8B=88=EB=8B=A4=20=E2=80=94=20=EC=9C=A0=EB=A6=AC=20=EA=B0=92?=
+ =?UTF-8?q?=EC=9D=80=20=EC=9C=A0=EB=A6=AC=EC=97=90=EB=A7=8C=20=EC=94=81?=
+ =?UTF-8?q?=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SketchUp 화면에서는 왼쪽이 **유리 칸막이벽**이고 뒤쪽 골프존이 비쳐
+보입니다. 우리 화면에서는 **불투명한 흰 판**이었습니다.
+
+## 원인 셋이 겹쳐 있었습니다
+
+문제의 재질이 SketchUp/Enscape 에 적어 둔 값 전부:
+
+    [Translucent Glass Gray]6
+      TypeV5 GENERIC · Opacity 0.458 · Roughness 0.584 · Specular 0.858
+      IsSolidGlass true · IndexOfRefraction 2.2906
+
+Enscape 에서 `IsSolidGlass` 와 `IndexOfRefraction` 은 **유리 재질 안에서만**
+뜻이 있습니다. GENERIC 재질에도 값이 남아 있고, 우리는 셋을 다 그대로
+믿었습니다.
+
+  (1) IsSolidGlass 를 "유리다" 신호로 씀   -> 두께 있는 매질
+  (2) IoR 2.29 를 그대로 씀                -> 임계각 약 26도, 대부분 전반사
+  (3) Roughness 0.584 를 투과에 씀         -> 뒤 이미지가 균일한 회색으로 흩어짐
+
+## 중간에 한 번 더 나빠졌습니다
+
+(1)을 고치면서 GENERIC 반투명을 `MaterialDomain::AlphaBlended` 로 보냈는데,
+**경로추적기에는 알파 블렌드가 없습니다**:
+
+    MaterialsBaker.cpp:704-705   AlphaBlended 는 알파 테스트도 투과도 아님
+    MaterialTypes.hlsli:45       셰이더에서 opacity 는 사실상 1 로 고정
+
+그래서 완전 불투명이 됐습니다. 뒤가 보이려면 **투과뿐**입니다.
+
+## 고침 — "유리라고 한 것만 유리 값을 쓴다"
+
+    const bool translucent = (alpha < 0.999f) && !hasTexture;   // 투과로 그림
+    const bool authorGlass = ePbr && sm.pbr.etype == "GLASS";   // 값을 믿을지
+
+    thinSurface = authorGlass ? !solidGlass : true;   // 나머지는 한 장의 면
+    ior         = authorGlass ? 저작자 값   : 기본    // ThinSurface 면 셰이더가 1 로
+    roughness   = authorGlass ? 저작자 값   : 설정값(Glass roughness)
+
+GENERIC 재질의 Roughness 는 **표면 마감**을 말하는 값이지 투과를 뭉개라는
+뜻이 아닙니다. IoR·덩어리와 같은 규칙을 거칠기에도 적용했습니다.
+
+    반투명 5개는 유리가 아닙니다 — 단면 투과로 그립니다 (IoR·덩어리 무시)
+    유리 — 단면 5개 · 덩어리 1개 · 저작자 굴절률 1개
+
+덩어리 1개·저작자 굴절률 1개가 `재질19`(TypeV5 GLASS · IoR 1.56)입니다.
+저작자가 그렇게 고른 것이고 그대로 갑니다.
+
+## 확인
+
+같은 카메라에서 SketchUp 과 나란히 놓았습니다. 유리벽 뒤의 골프존이
+비쳐 보입니다(이전에는 흰 판). 시험 4/4.
+
+남은 것: 우리 쪽이 SketchUp 보다 부드럽습니다. 45.8% 불투명이 회색
+확산층으로 남기 때문이고, SketchUp 뷰포트는 단순 알파라 늘 선명합니다.
+`Glass roughness` 슬라이더로 조절할 수 있게 해 두었습니다(지금 0.05).
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index db26777..72e9819 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -389,7 +389,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               (unsigned long long)stats.triangles, (unsigned long long)stats.vertices, stats.maxDepth);
+     log::info("IRIS: 재질 상속 — 상속 버킷 %zu · 인스턴스 재질 적용 %zu곳",
+               stats.inheritingBuckets, stats.overriddenSubInstances);
+-    log::info("IRIS: 저작자가 유리가 아니라고 한 반투명 %zu개 (알파 블렌드)",
++    log::info("IRIS: 반투명 %zu개는 유리가 아닙니다 — 단면 투과로 그립니다 (IoR·덩어리 무시)",
+               stats.authorTranslucent);
+     log::info("IRIS: 유리로 해석한 머티리얼 %zu개 (그중 저작자 지정 %zu) · 안 보임 %zu · Enscape 불투명도 적용 %zu",
+               stats.glassMaterials, stats.authorGlass,

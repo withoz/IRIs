@@ -356,13 +356,24 @@ namespace iris::bridge
             //
             // 이 모델의 반투명 4개 중 Enscape 가 유리라고 한 것은 `재질19`
             // 하나뿐입니다(GLASS · IoR 1.56). 나머지 셋은 GENERIC 입니다.
+            // **경로추적기에는 '알파 블렌드'가 없습니다.**
+            //
+            // 뒤가 보이려면 투과(Transmissive)뿐입니다. RTXPT 는
+            // `MaterialDomain::AlphaBlended` 를 알파 테스트로도 투과로도
+            // 치지 않고(MaterialsBaker.cpp:704-705), 셰이더에서 opacity 는
+            // 사실상 쓰이지 않습니다(MaterialTypes.hlsli:45 `opacity = 1`).
+            // 거기로 보내면 **완전 불투명**이 됩니다 — 한 번 그렇게 보내고
+            // 유리벽을 흰 판으로 만들었습니다.
+            //
+            // 그래서 **반투명이면 투과로 그립니다.** 저작자의 `TypeV5` 는
+            // '그리는 방식'이 아니라 **어떤 값을 믿을지**를 정합니다.
+            const bool translucent = (alpha < 0.999f) && !hasTexture;
             const bool authorGlass = ePbr && sm.pbr.etype == "GLASS";
-            const bool guessGlass  = (alpha < 0.999f && !hasTexture);
-            const bool glass       = ePbr ? authorGlass : guessGlass;
+            const bool glass       = translucent;
 
             // 저작자가 "유리 아니다" 라고 했는데 반투명인 것 — 알파 블렌드로
             // 갑니다. 몇 개인지 세어 두지 않으면 조용히 바뀝니다.
-            if (ePbr && !authorGlass && alpha < 0.999f)
+            if (translucent && !authorGlass)
                 ++stats.authorTranslucent;
 
             if (alpha <= kInvisible && !authorGlass)
@@ -375,9 +386,16 @@ namespace iris::bridge
             {
                 m->domain             = de::MaterialDomain::Transmissive;
                 m->transmissionFactor = 1.0f - alpha;
-                // 거칠기는 Enscape 값이 있으면 그쪽, 없으면 설정값
-                // (SetGlassRoughness — 기본 0.05, 근거 없는 값이라 밖으로 뺐습니다).
-                m->roughness          = ePbr ? sm.pbr.roughness : m_glassRoughness;
+                // **거칠기도 유리일 때만 저작자 값을 믿습니다.**
+                //
+                // GENERIC 재질의 Roughness 는 **표면 마감**을 말하는 값이고,
+                // Enscape 가 그걸로 투과를 뭉개지는 않습니다. 우리가 그대로
+                // 투과 로브에 넣었더니 거칠기 0.584 에서 뒤 이미지가 균일한
+                // 회색으로 흩어졌습니다 — 유리벽이 흰 판이 된 마지막 원인입니다.
+                //
+                // IoR·덩어리와 같은 규칙입니다: **유리라고 한 것만 유리 값을
+                // 씁니다.** 나머지는 설정값(Glass roughness)으로 갑니다.
+                m->roughness          = authorGlass ? sm.pbr.roughness : m_glassRoughness;
                 m->opacity            = 1.0f;   // 투과로 표현하므로 불투명도는 되돌립니다
                 ++stats.glassMaterials;
                 if (authorGlass)
@@ -398,7 +416,18 @@ namespace iris::bridge
                 //
                 // Enscape 가 말했으면 그 값이 이깁니다 — `false` 도 저작자의
                 // 답입니다. 아무 말이 없을 때만 설정값을 씁니다.
-                hints.thinSurface = ePbr ? !sm.pbr.solidGlass : m_glassThinDefault;
+                // ⚠ `IsSolidGlass` 와 `IndexOfRefraction` 은 **유리 재질 안에서만**
+                //   뜻이 있습니다. GENERIC 재질에도 값이 남아 있고, 골프존
+                //   모델의 `[Translucent Glass Gray]6` 이 그렇습니다
+                //   (GENERIC · IsSolidGlass true · IoR 2.29). 그걸 믿고 두께
+                //   있는 매질로 만들면 임계각이 약 26도라 대부분 전반사하고
+                //   **뒤가 안 비치는 회색 판**이 됩니다.
+                //
+                //   저작자가 유리라고 한 것만 그 둘을 믿습니다. 나머지
+                //   반투명은 **한 장의 면**으로 봅니다 — ThinSurface 가
+                //   켜지면 셰이더가 굴절률을 1 로 바꿔 곧게 통과시킵니다.
+                hints.thinSurface = authorGlass ? (ePbr ? !sm.pbr.solidGlass : m_glassThinDefault)
+                                                : true;
                 if (hints.thinSurface)
                     ++stats.thinGlass;
                 else
@@ -406,7 +435,7 @@ namespace iris::bridge
 
                 // 굴절률. Enscape 의 0 은 **미지정**입니다 — 그대로 넘기면
                 // 엔진이 기본값(1.5, 판유리)을 씁니다. 물 1.33, 아크릴 1.49.
-                if (ePbr && sm.pbr.ior > 1.0f && sm.pbr.ior < 3.0f)
+                if (authorGlass && sm.pbr.ior > 1.0f && sm.pbr.ior < 3.0f)
                 {
                     hints.ior = sm.pbr.ior;
                     ++stats.authorIor;
