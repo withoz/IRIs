@@ -36,6 +36,42 @@ namespace iris::bridge
     // 엔진의 씬 전환 경로를 그대로 재사용하기 위한 가상 이름입니다.
     inline constexpr const char* kLiveSceneName = "IRIS live";
 
+    // **HelloAck JSON 을 만듭니다.**
+    //
+    // 순수 함수로 빼 둔 이유는 하나입니다 — **칸을 빠뜨리면 조용히
+    // 망가집니다.** 실제로 세션 번호를 빠뜨려 델타가 영영 안 켜진 적이
+    // 있고, 호스트는 매번 전체를 보내면서도 아무 오류를 보지 못했습니다.
+    // 시험이 닿는 자리에 두면 다음에 누가 지워도 빨간불이 켜집니다.
+    //
+    //   need_full   렌더러가 전체 재전송을 원하는가
+    //   display_*   렌더러 화면 크기 (호스트가 구도를 맞춥니다)
+    //   applied     지금까지 화면에 올린 씬 수
+    //   pending     지금 대기 중인 씬이 있는가 — 참이면 아직 안 올렸습니다
+    //   dropped     적용 전에 더 새 씬에 밀려난 수
+    //
+    // 뒤의 셋은 **SyncAck 이 "받았다"이지 "적용했다"가 아니기 때문**에
+    // 있습니다. 호스트는 이것을 다음 동기화 시작에서 읽고 지난번 것이
+    // 화면에 올라갔는지 스스로 판정합니다(10번 10.4-b).
+    [[nodiscard]] inline std::string BuildHelloAck(uint32_t protocol,
+                                                   uint64_t session,
+                                                   bool     needFull,
+                                                   uint32_t displayW,
+                                                   uint32_t displayH,
+                                                   uint64_t applied,
+                                                   bool     pending,
+                                                   uint64_t dropped)
+    {
+        return "{\"protocol\":" + std::to_string(protocol) +
+               ",\"accepted\":true,\"renderer\":\"IRIS\",\"session\":" +
+               std::to_string(session) +
+               ",\"need_full\":" + (needFull ? "true" : "false") +
+               ",\"display_w\":" + std::to_string(displayW) +
+               ",\"display_h\":" + std::to_string(displayH) +
+               ",\"applied\":" + std::to_string(applied) +
+               ",\"pending\":" + (pending ? "true" : "false") +
+               ",\"dropped\":" + std::to_string(dropped) + "}";
+    }
+
     class IrisBridge
     {
     public:

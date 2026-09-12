@@ -10,6 +10,7 @@
 // 사용법:  test_irisb_reader.exe <파일.irisb>
 
 #include "iris/protocol/IrisbReader.h"
+#include "iris/bridge/IrisBridge.h"   // HelloAck 조립 (순수 함수)
 
 #include <chrono>
 #include <cmath>
@@ -430,6 +431,33 @@ int main(int argc, char** argv)
             raw.resize(got);
             TestErrorPaths(raw);
         }
+    }
+
+    // --- HelloAck 의 칸 ---
+    //
+    // **빠뜨리면 조용히 망가지는 자리입니다.** 세션 번호를 빠뜨려 델타가
+    // 영영 안 켜진 적이 있고, 호스트는 매번 전체를 보내면서도 아무 오류를
+    // 보지 못했습니다. 칸 이름 하나하나를 못 박습니다.
+    {
+        const std::string ack =
+            iris::bridge::BuildHelloAck(1, 12345, true, 1920, 1080, 7, true, 2);
+
+        const char* must[] = {
+            "\"protocol\":1", "\"accepted\":true", "\"renderer\":\"IRIS\"",
+            "\"session\":12345", "\"need_full\":true",
+            "\"display_w\":1920", "\"display_h\":1080",
+            // 아래 셋이 "보냈는데 화면이 안 바뀐다"를 호스트가 알아채는 근거입니다.
+            "\"applied\":7", "\"pending\":true", "\"dropped\":2",
+        };
+        for (const char* key : must)
+            Check(ack.find(key) != std::string::npos,
+                  std::string("HelloAck 에 ") + key);
+
+        const std::string off =
+            iris::bridge::BuildHelloAck(1, 1, false, 0, 0, 0, false, 0);
+        Check(off.find("\"need_full\":false") != std::string::npos, "need_full 거짓도 실린다");
+        Check(off.find("\"pending\":false") != std::string::npos, "pending 거짓도 실린다");
+        Check(off.find("\"applied\":0") != std::string::npos, "applied 0 도 실린다");
     }
 
     std::printf("\n────────────────────────────\n통과 %d / 실패 %d\n", g_passed, g_failed);

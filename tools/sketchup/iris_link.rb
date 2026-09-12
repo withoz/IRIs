@@ -260,9 +260,9 @@ module IRIS
                      pp[:blob_ms].to_f, pp[:json_ms].to_f, pp[:join_ms].to_f)
         end
         if @diag
-          say format('  └ 세션 %s (이전 %s) · 보유 판 %d개 · full=%s',
+          say format('  └ 세션 %s (이전 %s) · 보유 판 %d개 · full=%s · 렌더러가 올린 씬 %s개',
                      @diag[:session].inspect, @diag[:prev].inspect,
-                     @diag[:sent_gen], @diag[:full])
+                     @diag[:sent_gen], @diag[:full], @applied_seen.inspect)
         end
         gc = IRIS::Probe.respond_to?(:geom_counts) ? IRIS::Probe.geom_counts : nil
         if gc && gc[:skipped] > 0
@@ -286,7 +286,14 @@ module IRIS
           say format('  (추출 중 자체 무효화 억제: 엔티티 %d · 머티리얼 %d)',
                      sup[:elements].to_i, sup[:materials].to_i)
         end
-        say(ok ? '렌더러 화면이 바뀌어야 합니다.' : '전송 실패 — 위 메시지를 보십시오.')
+        if ok
+          # **"바뀌었다" 고 말하지 않습니다.** 우리가 받은 것은 수신
+          # 확인뿐입니다. 반영 여부는 다음 동기화의 HelloAck 에서 압니다
+          # (check_applied). 여기서는 보낸 것까지만 말합니다.
+          say '렌더러로 보냈습니다. (반영 여부는 다음 동기화 때 확인합니다)'
+        else
+          say '전송 실패 — 위 메시지를 보십시오.'
+        end
         log_timing(extract_ms, pack_ms, send_ms, sent_bytes, st, sig_ms: sig_ms)
         ok
       end
@@ -705,6 +712,59 @@ module IRIS
           alloc: b[:alloc] - a[:alloc] }
       end
 
+      # **지난번에 보낸 씬이 화면에 올라갔는가.**
+      #
+      # 왜 필요한가 — SyncAck 은 "받았다"이지 "적용했다"가 아닙니다.
+      # 렌더러는 바이트를 받는 순간 Ack 을 보내고, 실제 적용은 렌더 스레드가
+      # 나중에 합니다. 그 사이에 적용이 미뤄지거나(창 최소화) 더 새 씬에
+      # 밀려나도 우리는 알 방법이 없었고, "렌더러 화면이 바뀌어야 합니다"
+      # 라고 단정했습니다. **거짓 성공 보고**였습니다(10번 10.4-b).
+      #
+      # 렌더러가 HelloAck 에 실어 줍니다:
+      #   applied  지금까지 화면에 올린 씬 수
+      #   pending  지금 대기 중인 씬이 있는가
+      #   dropped  적용 전에 더 새 씬에 밀려난 수
+      #
+      # Hello 는 동기화 **시작**에 보내므로 여기서 보는 값은 직전 동기화의
+      # 결과입니다. 한 박자 늦지만, 그 대신 기다리지 않습니다 — 전송 끝에서
+      # 확인하려면 씬 구축(0.4~2초)이 끝나기를 기다려야 하고 그만큼
+      # SketchUp 이 멎습니다.
+      def check_applied(ack, session)
+        applied = ack['applied']
+
+        # 옛 렌더러는 이 칸을 안 보냅니다. 조용히 넘어갑니다.
+        if applied.nil?
+          @applied_seen = nil
+          return
+        end
+
+        applied = applied.to_i
+        dropped = ack['dropped'].to_i
+        pending = ack['pending'] ? true : false
+        same    = !@applied_session.nil? && @applied_session == session
+
+        # **`pending` 으로 가릅니다.**
+        #
+        # applied 가 안 올랐다는 것만으로는 실패가 아닙니다. 렌더러가 씬을
+        # 가져가 짓는 중일 수 있고(1.5~2.5초), 그때는 pending 이 거짓이며
+        # 곧 올라갑니다. 그걸 실패로 말하면 이번엔 반대로 거짓말이 됩니다.
+        #
+        #   pending 참  — 아직 아무도 안 집어 갔습니다. 최소화가 대표적입니다.
+        #   pending 거짓 + applied 그대로 — 짓는 중이거나 밀려났습니다.
+        if same && pending && @sent_since_check.to_i > 0
+          say '⚠ 지난번에 보낸 씬이 아직 화면에 올라가지 않았습니다.'
+          say '  렌더러 창이 최소화되어 있으면 복원해 주십시오 — 그때 바로 올라갑니다.'
+        elsif same && @dropped_seen && dropped > @dropped_seen
+          say format('  (렌더러가 적용 전에 밀어낸 씬 %d개 — 편집이 렌더보다 빠릅니다)',
+                     dropped - @dropped_seen)
+        end
+
+        @applied_seen     = applied
+        @applied_session  = session
+        @dropped_seen     = dropped
+        @sent_since_check = 0
+      end
+
       # 렌더러 화면 크기. HelloAck 로 옵니다.
       def remember_display(ack)
         w = ack['display_w'].to_i
@@ -918,6 +978,24 @@ module IRIS
           @diag = { session: session, prev: @session,
                     sent_gen: (@sent_gen || {}).size, full: full }
 
+          # **지난번 것이 화면에 올라갔는지 여기서 압니다.**
+          #
+          # SyncAck 은 "받았다"이지 "적용했다"가 아닙니다. 바이트를 받으면
+          # 그 자리에서 Ack 이 오고, 실제 적용은 렌더 스레드가 나중에 합니다.
+          # 그래서 전송이 끝났다고 "화면이 바뀌었다"고 말할 수 없습니다 —
+          # 실제로 그렇게 단정하다가 렌더러 창이 배경일 때 조용히
+          # 거짓말을 했습니다(10번 10.4-b).
+          #
+          # 렌더러가 HelloAck 에 실어 주는 것:
+          #   applied  지금까지 화면에 올린 씬 수
+          #   pending  지금 대기 중인 씬이 있는가
+          #   dropped  적용 전에 더 새 씬에 밀려난 수
+          #
+          # Hello 는 동기화 **시작**에 보내므로, 여기서 보는 값은 직전
+          # 동기화의 결과입니다. 같은 세션인데 applied 가 그대로면 지난번
+          # 것이 아직 화면에 없습니다.
+          check_applied(ack, session)
+
           # 렌더러가 "지난번에 재사용할 메시가 없었다"고 하면 우리 기억이
           # 틀린 것입니다. 그대로 두면 그 물체가 화면에서 사라진 채 남습니다.
           if ack['need_full']
@@ -952,6 +1030,8 @@ module IRIS
           @phase[:defs_full] = plan[:sent_gen].size
 
           # --- 씬 ---
+          # 다음 Hello 에서 "이만큼 보냈는데 반영됐나"를 견주는 기준입니다.
+          @sent_since_check = @sent_since_check.to_i + 1
           @seq = @seq.to_i + 1
           t = Time.now
           send_frame(io, MSG_SYNC_BEGIN, JSON.generate('seq' => @seq).b)

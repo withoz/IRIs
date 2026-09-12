@@ -120,19 +120,35 @@ namespace iris::bridge
             if (needFull)
                 say("지난 씬에 재사용할 메시가 없었습니다 — 전체 재전송을 요청합니다");
 
+            // **호스트가 반영 여부를 알 수 있어야 합니다.**
+            //
+            // SyncAck 은 "받았다"이지 "적용했다"가 아닙니다. 바이트를 받으면
+            // 그 자리에서 Ack 을 보내고, 실제 적용은 렌더 스레드가 나중에
+            // 합니다. 그래서 호스트는 "보냈으니 화면이 바뀌었겠지" 라고
+            // 단정할 수 없습니다 — 실제로 그렇게 단정하다가 창이 배경일 때
+            // 조용히 거짓말을 했습니다(10번 10.4-b).
+            //
+            // 포커스 쪽은 고쳤지만 **최소화**는 남습니다. Donut 은
+            // m_windowVisible 이 거짓이면 프레임 훅을 묻지도 않습니다.
+            //
+            // 그래서 상태를 **다음 Hello 에 실어** 돌려줍니다. 호스트는 다음
+            // 동기화를 시작할 때 이것을 보고 스스로 판정합니다. need_full 과
+            // 같은 수법입니다.
             uint32_t dw = 0, dh = 0;
+            uint64_t applied = 0, dropped = 0;
+            bool     pending = false;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                dw = m_displayW;
-                dh = m_displayH;
+                dw      = m_displayW;
+                dh      = m_displayH;
+                applied = m_applied;
+                dropped = m_dropped;
+                pending = !m_pending.empty();
             }
 
-            ack = "{\"protocol\":" + std::to_string(protocol::kProtocolVersion) +
-                  ",\"accepted\":true,\"renderer\":\"IRIS\",\"session\":" +
-                  std::to_string(protocol::ProcessSessionId()) +
-                  ",\"need_full\":" + (needFull ? "true" : "false") +
-                  ",\"display_w\":" + std::to_string(dw) +
-                  ",\"display_h\":" + std::to_string(dh) + "}";
+            ack = BuildHelloAck(protocol::kProtocolVersion,
+                                protocol::ProcessSessionId(),
+                                needFull, dw, dh, applied, pending, dropped);
             return true;
         };
 

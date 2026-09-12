@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 17:06:36 +0900
+Subject: [PATCH 38/38] =?UTF-8?q?feat(iris):=20=EC=94=AC=EC=9D=84=20?=
+ =?UTF-8?q?=EB=AA=BB=20=EC=98=AC=EB=A0=B8=EC=9C=BC=EB=A9=B4=20=EA=B7=B8?=
+ =?UTF-8?q?=EB=A0=87=EB=8B=A4=EA=B3=A0=20=EB=A7=90=ED=95=A9=EB=8B=88?=
+ =?UTF-8?q?=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+남은 구멍 둘을 닫습니다. 창을 최소화하면 Donut 은 m_windowVisible 이
+거짓이라 ShouldRenderUnfocused() 를 묻지도 않습니다.
+
+## 그 상태에서 씬을 올리지는 않습니다
+
+창이 0x0 이라 렌더 타깃이 0 크기로 잡힐 수 있고, 사용자가 일부러 내려
+둔 창을 위해 GPU 를 굴리는 것도 맞지 않습니다. 복원할 때 올리는 지금
+동작이 옳습니다.
+
+문제는 반영이 미뤄지는 것이 아니라 **아무도 그 사실을 말하지 않는
+것**이었습니다.
+
+## (1) 작업 표시줄로 알립니다
+
+DeviceManager::m_callbacks.beforeFrame 은 RunMessageLoop 이 가시성과
+무관하게 매 iteration 부르는 유일한 자리입니다. 거기서 최소화 + 대기 씬이면
+glfwRequestWindowAttention() 으로 단추만 깜빡입니다 — 포커스는 뺏지
+않습니다. 대기 씬 하나에 한 번만 울립니다.
+
+## (2) HelloAck 에 반영 상태를 실어 보냅니다
+
+  applied  지금까지 화면에 올린 씬 수
+  pending  지금 대기 중인 씬이 있는가
+  dropped  적용 전에 더 새 씬에 밀려난 수
+
+SyncAck 은 "받았다"이지 "적용했다"가 아닙니다. 호스트는 이것을 다음
+동기화 시작에서 읽고 스스로 판정합니다 — need_full 과 같은 수법입니다.
+
+조립을 BuildHelloAck() 순수 함수로 뺐습니다. 이 자리는 **칸을 빠뜨리면
+조용히 망가집니다** — 세션 번호를 빠뜨려 델타가 영영 안 켜진 적이 있고,
+호스트는 매번 전체를 보내면서도 아무 오류를 보지 못했습니다. 이제 시험이
+칸 이름 하나하나를 못 박습니다(test_irisb_reader, 13개).
+
+## 확인
+
+렌더러를 새로 띄워 씬을 보내기 전에 최소화했습니다.
+
+  1차 동기화  씬 수신 → "창이 최소화되어 있습니다" · 깜빡임 · LoadIrisb 없음
+  2차 동기화  호스트가 ⚠ 경고
+  창 복원     동기화 없이 바로 LoadIrisb
+  3차 동기화  경고 사라짐 · 렌더러가 올린 씬 1개
+
+세션이 바뀐 동기화에서는 경고하지 않습니다 — 확인했습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Sample.cpp | 43 +++++++++++++++++++++++++++++++++++++++++++
+ Rtxpt/Sample.h   | 16 ++++++++++++++++
+ 2 files changed, 59 insertions(+)
+
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index d32b635..9dc2f2c 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -419,6 +419,22 @@ void Sample::Init(const std::string& preferredScene,
+         log::warning("IRIS: 라이브 링크를 시작하지 못했습니다 — %s",
+                      iris::bridge::IrisBridge::Get().LastError().c_str());
+ 
++    // IRIS: 최소화된 창에도 알리기 위한 훅.
++    //
++    // beforeFrame 은 RunMessageLoop 이 **가시성과 무관하게** 매 iteration
++    // 부르는 유일한 자리입니다. 이미 걸린 것이 있으면 이어 붙입니다.
++    if (donut::app::DeviceManager* dm = GetDeviceManager())
++    {
++        auto prev = dm->m_callbacks.beforeFrame;
++        dm->m_callbacks.beforeFrame =
++            [this, prev](donut::app::DeviceManager& d, uint32_t frame)
++            {
++                if (prev)
++                    prev(d, frame);
++                IrisBeforeFrame(d);
++            };
++    }
++
+     std::string scene = FindPreferredScene(m_sceneFilesAvailable, preferredScene);
+ 
+     // Select initial scene
+@@ -1745,6 +1761,33 @@ void Sample::RtxdiSetupFrame(nvrhi::IFramebuffer* framebuffer, PathTracerCameraD
+         m_scene, m_materialsBaker, m_ommBaker, m_subInstanceBuffer, bridgeParameters, m_bindingLayout, m_shaderDebug );
+  }
+ 
++// IRIS: 최소화 중에도 도는 유일한 훅. Sample.h 의 선언에 이유가 있습니다.
++void Sample::IrisBeforeFrame(donut::app::DeviceManager& dm)
++{
++    if (!iris::bridge::IrisBridge::Get().HasPendingScene())
++    {
++        m_irisAttentionAsked = false;   // 반영됐습니다 — 다음 씬에 다시 알립니다
++        return;
++    }
++
++    GLFWwindow* window = dm.GetWindow();
++    if (window == nullptr)
++        return;
++
++    // 최소화가 아니면 이 프레임(또는 곧)에 반영됩니다. 알릴 것 없습니다.
++    if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) == 0)
++        return;
++
++    if (m_irisAttentionAsked)
++        return;
++    m_irisAttentionAsked = true;
++
++    // 포커스를 뺏지 않습니다 — 작업 표시줄 단추만 깜빡입니다.
++    glfwRequestWindowAttention(window);
++    log::info("IRIS: 새 씬이 왔는데 창이 최소화되어 있습니다 — 복원하면 올라갑니다.");
++    iris::Trace("최소화 상태에서 대기 씬 — 작업 표시줄로 알립니다");
++}
++
+ bool Sample::ShouldRenderUnfocused()
+ {
+     // IRIS: **호스트가 보낸 것이 있으면 포커스와 무관하게 프레임을 돌립니다.**
+diff --git a/Rtxpt/Sample.h b/Rtxpt/Sample.h
+index b214fb7..3f8ca25 100644
+--- a/Rtxpt/Sample.h
++++ b/Rtxpt/Sample.h
+@@ -102,6 +102,18 @@ public:
+     virtual bool                            MouseScrollUpdate(double xoffset, double yoffset) override;
+     virtual void                            Animate(float fElapsedTimeSeconds) override;
+ 
++    // IRIS: **최소화된 창에도 알립니다.**
++    //
++    // 창을 최소화하면 Donut 은 프레임을 통째로 건너뜁니다 —
++    // `ShouldRenderUnfocused()` 를 묻지도 않으므로 대기 중인 씬을 아무도
++    // 집어 가지 않습니다. 그렇다고 그 상태에서 씬을 올리는 것은 위험합니다:
++    // 창이 0x0 이라 렌더 타깃이 0 크기로 잡힐 수 있습니다.
++    //
++    // 대신 **최소화 중에도 도는 유일한 훅**(DeviceManager::m_callbacks.
++    // beforeFrame, RunMessageLoop 이 가시성과 무관하게 부릅니다)에서 작업
++    // 표시줄을 한 번 깜빡입니다. 복원하면 그때 바로 올라갑니다.
++    void                                    IrisBeforeFrame(donut::app::DeviceManager& dm);
++
+     void                                    FillPTPipelineGlobalMacros(std::vector<donut::engine::ShaderMacro> & macros);
+     bool                                    CreatePTPipeline(donut::engine::ShaderFactory& shaderFactory);
+     void                                    DestroyOpacityMicromaps(nvrhi::ICommandList* commandList);
+@@ -282,6 +294,10 @@ private:
+     // 흐림을 이미 밀어 넣은 하늘 객체. 같은 객체면 다시 안 씁니다 —
+     // 매 프레임 덮어쓰면 엔진의 Procedural Sky 슬라이더가 먹히지 않습니다.
+     const class SampleProceduralSky*            m_irisSkyApplied = nullptr;
++
++    // 대기 중인 씬 하나에 대해 작업 표시줄을 **한 번만** 깜빡입니다.
++    // 매 프레임 부르면 계속 깜빡여 성가십니다.
++    bool                                        m_irisAttentionAsked = false;
+     std::shared_ptr<LightsBaker>                m_lightsBaker;
+     std::shared_ptr<class MaterialsBaker>       m_materialsBaker;
+     std::shared_ptr<class OmmBaker>             m_ommBaker;
