@@ -189,10 +189,31 @@ namespace iris::bridge
         m_defaultMaterial->metalness          = 0.0f;
         m_defaultMaterial->domain             = de::MaterialDomain::Opaque;
 
+        // **저장된 재질 덮어쓰기를 모델별로 가릅니다.**
+        //
+        // RTXPT 는 재질을 `<모델>.<재질>.material.json` 으로 저장·복원하고,
+        // 그 파일이 있으면 **우리가 만든 값을 통째로 무시합니다**
+        // (MaterialsBaker.cpp 의 `materialEx->PTMaterial = loaded;`).
+        // 실측으로 확인했습니다 — 파일 하나를 심었더니 커튼월이 호스트가
+        // 보낸 회색 반투명 유리를 무시하고 불투명 빨강이 됐습니다(11번 (3)).
+        //
+        // 그런데 우리는 `modelFileName` 을 비워 두고 있었습니다. 그러면
+        // 모델명이 빈 문자열이라 파일이 `.<재질>.material.json` 이 되고,
+        // **모든 SketchUp 모델이 이름만 같으면 같은 파일을 씁니다** —
+        // `재질1`·`IRIS_default` 처럼 흔한 이름에서 바로 부딪힙니다.
+        //
+        // 모델을 여기에 실어 두면 `<모델>.<재질>.material.json` 이 됩니다.
+        // 저장 안 한 모델은 경로가 없으므로 제목으로 갑니다.
+        const std::string modelKey =
+            ToNativeNarrow(src.sourceFile.empty() ? src.sourceTitle : src.sourceFile);
+        m_defaultMaterial->modelFileName = modelKey;
+
+
         for (const auto& sm : src.materials)
         {
             auto m = m_typeFactory->CreateMaterial();
-            m->name    = ToNativeNarrow(sm.name.empty() ? sm.id : sm.name);
+            m->name          = ToNativeNarrow(sm.name.empty() ? sm.id : sm.name);
+            m->modelFileName = modelKey;
 
             const bool hasTexture = sm.hasTexture && !sm.texture.exportPath.empty();
             const bool ePbr       = sm.pbr.present;
