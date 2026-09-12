@@ -1,0 +1,45 @@
+nvrhi: OMM 링키지에 널 검사가 없습니다 (D3D12, DXR 1.2 경로)
+
+증상
+  알파 테스트 재질과 불투명 재질이 **한 메시 안에 섞여** 있으면 BLAS 를
+  만들 때 0x0 읽기로 죽습니다. IRIS 에서는 텍스처 알파 컷아웃을 켜자마자
+  재현됩니다 — SketchUp 정의는 재질 버킷이 여럿이라 섞인 메시가 보통입니다.
+
+  #00 nvrhi::d3d12::fillAsInputDescForPreBuildInfo  (d3d12-raytracing.cpp:776)
+  #01 nvrhi::d3d12::Device::GetAccelStructPreBuildInfo
+  #02 nvrhi::d3d12::Device::createAccelStruct
+  #03 OmmBuildQueue::BuildBLASWithOMM               (OmmBuildQueue.cpp:389)
+  #06 OmmBaker::BuildOpacityMicromaps
+  #07 Sample::Render
+
+원인
+  `fillAsInputDescForPreBuildInfo` 는 지오메트리 **하나라도** OMM 을 가지면
+  `hasOMM` 을 세우고, 그다음 루프에서 **모든** 지오메트리에 대해 링키지를
+  채웁니다. 그런데 `fillD3dGeometryOMMLinkageDesc` 는 널 검사를 하지
+  않습니다. 같은 파일 665줄의 NVAPI 경로(`fillOmmAttachmentDesc`)는
+  검사합니다 — 한쪽만 빠진 것입니다.
+
+적용
+  cd External/Donut/nvrhi && git apply ../../../../IRIS/tools/rtxpt/patches/nvrhi-omm-linkage-null.patch
+
+  ⚠ nvrhi 는 **중첩 서브모듈**(RTXPT -> Donut -> nvrhi)입니다. 이 수정은
+    다른 체크아웃으로 따라가지 않습니다. 그래서 기본 동작은 우리 쪽 가드
+    (Rtxpt/OpacityMicroMap/OmmBaker.cpp 의 '섞인 메시는 건너뜁니다')이고,
+    이 패치는 **OMM 을 실제로 쓰고 싶을 때** 적용합니다. 적용한 뒤에는
+    그 가드를 빼야 OMM 이 다시 켜집니다.
+
+--- a/src/d3d12/d3d12-raytracing.cpp
++++ b/src/d3d12/d3d12-raytracing.cpp
+@@ -647,7 +647,11 @@
+     static void fillD3dGeometryOMMLinkageDesc(D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC& outLinkage, const rt::GeometryDesc& geometryDesc)
+     {
+         const auto& triangles = geometryDesc.geometryData.triangles;
+-        outLinkage.OpacityMicromapArray = triangles.opacityMicromap->getDeviceAddress();
++        // A BLAS may mix geometries with and without an opacity micromap: the
++        // caller sets hasOMM if *any* geometry has one, then fills the linkage
++        // for *all* of them. A null array means "no OMM for this geometry".
++        outLinkage.OpacityMicromapArray = triangles.opacityMicromap == nullptr
++            ? 0 : triangles.opacityMicromap->getDeviceAddress();
+         outLinkage.OpacityMicromapBaseLocation = 0;
+         outLinkage.OpacityMicromapIndexBuffer.StartAddress = triangles.ommIndexBuffer == nullptr ? 0 : checked_cast<Buffer*>(triangles.ommIndexBuffer)->gpuVA + triangles.ommIndexBufferOffset;
+         outLinkage.OpacityMicromapIndexBuffer.StrideInBytes = triangles.ommIndexFormat == Format::R32_UINT ? 4 : 2;

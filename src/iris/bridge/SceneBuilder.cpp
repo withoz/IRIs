@@ -315,10 +315,9 @@ namespace iris::bridge
                 // 셰이더를 붙이고(PTPipelineBaker.cpp), BLAS 의 불투명
                 // 최적화를 잃습니다. 그래서 채널이 있다고 다 켜지 않고
                 // **실제로 구멍이 있을 때** 켭니다(Texture::NeedsAlphaTest).
-                // ⚠ 지금은 **기본으로 꺼져 있습니다**(m_alphaCutout). 이
-                //   분기를 타는 재질이 하나라도 있으면 RTXPT 가 씬 적용
-                //   직후 죽습니다. 호스트 절반(측정·전달·판정)은 시험까지
-                //   끝났고, 엔진 쪽 원인은 아직 못 찾았습니다 — 11번 (a).
+                // 이 분기를 처음 켰을 때 렌더러가 죽었습니다. 원인은 우리가
+                // 아니라 nvrhi 의 널 검사 누락이었고, 엔진 쪽 가드로
+                // 막았습니다 — RTXPT 의 OmmBaker.cpp '섞인 메시' 주석.
                 m->domain     = de::MaterialDomain::AlphaTested;
                 m->alphaCutoff = 0.5f;
                 ++stats.cutoutMaterials;

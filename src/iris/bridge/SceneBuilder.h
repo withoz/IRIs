@@ -240,8 +240,8 @@ namespace iris::bridge
         // 유리일 수도, 반투명 스크린일 수도 있습니다.
         void SetGlassRoughness(float r) { m_glassRoughness = (r < 0.0f) ? 0.0f : (r > 1.0f ? 1.0f : r); }
 
-        // 텍스처 알파 채널로 구멍을 낼 것인가(알파 테스트). 기본은 **꺼짐**
-        // 입니다 — 켜면 렌더러가 죽습니다(11번 (a), IrisSettings.h 주석).
+        // 텍스처 알파 채널로 구멍을 낼 것인가(알파 테스트) — 11번 (a).
+        // 실제로 구멍이 있는 텍스처만 대상입니다(Texture::NeedsAlphaTest).
         void SetAlphaCutout(bool on) { m_alphaCutout = on; }
         [[nodiscard]] bool AreaLightGeometry() const { return m_areaLightGeometry; }
 
