@@ -294,6 +294,38 @@ namespace iris::bridge
                 ++stats.glassMaterials;
                 if (authorGlass)
                     ++stats.authorGlass;
+
+                // **단면인가 덩어리인가.** Donut 머티리얼에는 칸이 없어 지금까지
+                // 버리던 값입니다(11번 (b)).
+                //
+                // Enscape 가 `IsSolidGlass` 를 따로 두는 이유가 이것입니다.
+                // 두께 있는 매질로 다루면 광선이 들어가서 안 나오고, 굴절과
+                // 흡수가 어긋납니다. 건축 유리는 거의 **한 장의 면**입니다.
+                //
+                // ⚠ 저작자가 말하지 않으면 **얇은 쪽**이 기본입니다. 커튼월·
+                //   난간·창은 단면으로 그리는 것이 보통이기 때문입니다. 유리
+                //   탁자처럼 진짜 두께가 있는 물건은 이 기본값이 틀립니다 —
+                //   그때는 Enscape 에서 `IsSolidGlass` 를 켜야 합니다.
+                //   (등급: **가정**. 모델 통계로 확인한 적은 없습니다.)
+                MaterialHints hints;
+                //
+                // Enscape 가 말했으면 그 값이 이깁니다 — `false` 도 저작자의
+                // 답입니다. 아무 말이 없을 때만 설정값을 씁니다.
+                hints.thinSurface = ePbr ? !sm.pbr.solidGlass : m_glassThinDefault;
+                if (hints.thinSurface)
+                    ++stats.thinGlass;
+                else
+                    ++stats.solidGlass;
+
+                // 굴절률. Enscape 의 0 은 **미지정**입니다 — 그대로 넘기면
+                // 엔진이 기본값(1.5, 판유리)을 씁니다. 물 1.33, 아크릴 1.49.
+                if (ePbr && sm.pbr.ior > 1.0f && sm.pbr.ior < 3.0f)
+                {
+                    hints.ior = sm.pbr.ior;
+                    ++stats.authorIor;
+                }
+                if (m_applyMaterialHints)
+                    m_applyMaterialHints(*m, hints);
             }
             else if (alpha < 0.999f)
             {

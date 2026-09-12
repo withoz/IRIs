@@ -137,6 +137,54 @@ def build():
                 "emissive_cd": 5076.72637359386,
             },
         },
+        # --- 유리 세 가지 ------------------------------------------------
+        #
+        # 단면인가 덩어리인가(IsSolidGlass)와 굴절률(IndexOfRefraction)은
+        # Donut 의 Material 에 칸이 없어 오랫동안 버려지던 값입니다(11번 (b)(c)).
+        # 파이프가 실제로 나르는지 여기서 못박습니다 — 화면으로는 늦게 드러납니다.
+        {
+            "id": "mat_glass_thin",
+            "name": "curtain wall (단면, 굴절률 미지정)",
+            "color": [0.85, 0.9, 0.9],
+            "alpha": 0.2,
+            "type": 0,
+            "texture": None,
+            "pbr": {
+                "etype": "GENERIC", "roughness": 0.05, "metalness": 0.0,
+                "specular": 0.5, "opacity": 0.2,
+                "ior": 0.0,            # Enscape 의 0 = 미지정
+                "solid_glass": False,
+            },
+        },
+        {
+            "id": "mat_glass_solid",
+            "name": "solid glass block",
+            "color": [0.9, 0.95, 0.95],
+            "alpha": 0.3,
+            "type": 0,
+            "texture": None,
+            "pbr": {
+                "etype": "GENERIC", "roughness": 0.02, "metalness": 0.0,
+                "specular": 0.5, "opacity": 0.3,
+                "ior": 1.52,           # 판유리
+                "solid_glass": True,
+            },
+        },
+        {
+            "id": "mat_water",
+            "name": "water",
+            "color": [0.7, 0.85, 0.9],
+            "alpha": 0.4,
+            "type": 0,
+            "texture": None,
+            "pbr": {
+                "etype": "GENERIC", "roughness": 0.0, "metalness": 0.0,
+                "specular": 0.5, "opacity": 0.4,
+                "ior": 1.33,
+                "solid_glass": True,
+            },
+        },
+
         # --- 텍스처 알파 세 가지 ---------------------------------------
         #
         # 컷아웃(나뭇잎·타공판)의 구멍은 재질 알파가 아니라 **텍스처의 알파

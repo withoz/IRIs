@@ -343,6 +343,31 @@ int main(int argc, char** argv)
         }
     }
 
+    // --- 유리: 단면/덩어리와 굴절률 (합성 배선 씬에 있을 때만) ---
+    //
+    // 둘 다 Donut 의 Material 에 칸이 없어 오랫동안 버려지던 값입니다.
+    // 항목 이름이 어긋나면 조용히 기본값으로 떨어지고, 그러면 모든 유리가
+    // 다시 덩어리 1.5 가 됩니다 — 화면으로는 늦게 드러납니다.
+    for (const auto& m : scene.materials)
+    {
+        if (m.id == "mat_glass_thin")
+        {
+            Check(m.pbr.present,           "mat_glass_thin: Enscape 설정을 읽었다");
+            Check(!m.pbr.solidGlass,       "mat_glass_thin: 덩어리가 아니라고 읽었다");
+            Check(m.pbr.ior == 0.0f,       "mat_glass_thin: 굴절률은 미지정(0)으로 남았다");
+        }
+        else if (m.id == "mat_glass_solid")
+        {
+            Check(m.pbr.solidGlass,                        "mat_glass_solid: 덩어리로 읽었다");
+            Check(std::fabs(m.pbr.ior - 1.52f) < 1e-4f,    "mat_glass_solid: 굴절률 1.52 를 읽었다");
+        }
+        else if (m.id == "mat_water")
+        {
+            Check(m.pbr.solidGlass,                        "mat_water: 덩어리로 읽었다");
+            Check(std::fabs(m.pbr.ior - 1.33f) < 1e-4f,    "mat_water: 굴절률 1.33 을 읽었다");
+        }
+    }
+
     // --- 알파 테스트 판정 (순수 논리라 파일이 필요 없습니다) ---
     //
     // 여기서 틀리면 나뭇잎·타공판의 구멍이 막히거나(끄는 쪽으로 틀림),

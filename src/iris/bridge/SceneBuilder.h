@@ -70,6 +70,9 @@ namespace iris::bridge
         size_t   authorOpacity      = 0;  // Enscape 불투명도가 SketchUp 알파를 덮은 것
         size_t   cutoutMaterials    = 0;  // 텍스처 알파로 구멍을 내는 재질 (알파 테스트)
         size_t   cutoutUnmeasured   = 0;  // 그중 프로브가 픽셀을 못 재서 켠 것
+        size_t   thinGlass          = 0;  // 단면으로 본 유리 (ThinSurface)
+        size_t   solidGlass         = 0;  // 두께 있는 덩어리로 본 유리 (Enscape 지정)
+        size_t   authorIor          = 0;  // Enscape 굴절률을 쓴 재질
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
@@ -133,6 +136,31 @@ namespace iris::bridge
             std::function<void(donut::engine::MeshInstance&,
                                std::vector<std::shared_ptr<donut::engine::Material>>&&)>;
         void SetInstanceMaterialApplier(InstanceMaterialApplier fn) { m_applyInstanceMaterials = std::move(fn); }
+
+        // **Donut 머티리얼에 칸이 없는 값들.**
+        //
+        // 호스트는 알고 있는데 `donut::engine::Material` 에 담을 곳이 없어
+        // 버려지던 것들입니다. RTXPT 의 `PTMaterial` 에는 자리가 있습니다:
+        //
+        //   ThinSurface  단면인가 두께가 있는 덩어리인가. 셰이더에서 이 깃발은
+        //                굴절률을 1 로 바꿔치기하고(BxDF.hlsli) 중첩 유전체
+        //                스택을 건너뜁니다. 건축 유리는 거의 **한 장의 면**
+        //                이라 두께 있는 매질로 다루면 굴절·흡수가 어긋납니다.
+        //   IoR          Enscape 의 IndexOfRefraction. `ImportFromDonut` 에서
+        //                주석 처리되어 있어(Donut 에 필드가 없습니다) 지금까지
+        //                전부 1.5 였습니다.
+        //
+        // 이 계층은 RTXPT 타입을 몰라야 하므로 **적용은 호출자에게 넘깁니다** —
+        // 인스턴스 재질과 같은 방식입니다. 결합이 IrisScene.cpp 한 곳에만
+        // 남습니다(11번 11.6).
+        struct MaterialHints
+        {
+            bool  thinSurface = true;    // 단면으로 볼 것인가
+            float ior         = 0.0f;    // 0 이면 미지정 — 엔진 기본값(1.5)을 둡니다
+        };
+        using MaterialHintApplier =
+            std::function<void(donut::engine::Material&, const MaterialHints&)>;
+        void SetMaterialHintApplier(MaterialHintApplier fn) { m_applyMaterialHints = std::move(fn); }
 
         // **측광 단위 -> 렌더러 라디언스 단위.**
         //
@@ -243,6 +271,10 @@ namespace iris::bridge
         // 텍스처 알파 채널로 구멍을 낼 것인가(알파 테스트) — 11번 (a).
         // 실제로 구멍이 있는 텍스처만 대상입니다(Texture::NeedsAlphaTest).
         void SetAlphaCutout(bool on) { m_alphaCutout = on; }
+
+        // **Enscape 값이 없을 때** 유리를 단면으로 볼 것인가 — 11번 (b).
+        // Enscape 가 IsSolidGlass 를 말했으면 그 값이 이깁니다.
+        void SetGlassThinDefault(bool thin) { m_glassThinDefault = thin; }
         [[nodiscard]] bool AreaLightGeometry() const { return m_areaLightGeometry; }
 
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
@@ -256,6 +288,7 @@ namespace iris::bridge
         bool                                    m_skyOwnsSun       = false;
         TextureLoader                           m_textureLoader;
         InstanceMaterialApplier                 m_applyInstanceMaterials;
+        MaterialHintApplier                     m_applyMaterialHints;
         void Trace(const std::string& msg) const { if (m_trace) m_trace(msg); }
 
         std::shared_ptr<donut::engine::SceneTypeFactory> m_typeFactory;
@@ -282,6 +315,7 @@ namespace iris::bridge
         bool  m_areaLightGeometry = true;
         float m_glassRoughness    = 0.05f;
         bool  m_alphaCutout       = false;
+        bool  m_glassThinDefault  = true;
         IesApplier m_iesApplier;
         std::set<std::string> m_iesKeys;   // 고유 배광 개수 세기
         // 라디언스·색이 같으면 같은 메시를 씁니다. 단위 사각형 하나를
