@@ -1,0 +1,525 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Fri, 11 Sep 2026 14:57:00 +0900
+Subject: [PATCH 24/34] =?UTF-8?q?feat(iris):=20=ED=95=98=EB=8A=98=C2=B7?=
+ =?UTF-8?q?=EB=85=B8=EC=B6=9C=C2=B7=EC=A1=B0=EB=AA=85=20=EB=B3=80=ED=99=98?=
+ =?UTF-8?q?=EC=9D=84=20IRIS=20=EC=84=A4=EC=A0=95=EC=9C=BC=EB=A1=9C=20(?=
+ =?UTF-8?q?=ED=95=98=EB=8A=98=EC=9D=B4=20=EB=8A=A6=EA=B2=8C=20=EC=83=9D?=
+ =?UTF-8?q?=EA=B8=B0=EB=8A=94=20=EB=B2=84=EA=B7=B8=20=ED=8F=AC=ED=95=A8)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+SketchUp 그림자 패널에는 날짜·시각·위치만 있습니다. 날씨도 노출도 없어서
+호스트가 정할 수 없는 값들인데, 그동안 코드에 박혀 있거나(구름 1.0, 자동
+노출) 환경변수였습니다(IRIS_AREA_LIGHTS, IRIS_IES). 사용자가 바꿀 수 없고
+껐다 켜면 사라졌습니다.
+
+Rtxpt/Iris/IrisSettings.h 하나로 모으고 %LOCALAPPDATA%\IRIS\settings.json
+에 남깁니다. 렌더러 설정 창 맨 위 `IRIS` 항목이고, 호스트 씬일 때만
+보입니다. 환경변수는 시험용 덮어쓰기로 남겨 뒀습니다.
+
+하늘은 뒤늦게 생깁니다 — 한 번 적용으로는 놓칩니다
+
+  EnvMapBaker 는 환경맵 경로가 절차적 하늘이 될 때에야 하늘 객체를
+  만듭니다(:421). 골프존 실내 모델은 그림자가 꺼진 채로 열려 태양이 없었고,
+  태양이 없으면 HDRI 를 씁니다. 그래서 SceneLoaded 시점에는
+  GetProceduralSky() 가 nullptr 이라 조용히 넘어갔고, 나중에 그림자를 켜자
+  하늘이 엔진 기본값 0.75(짙은 구름)로 새로 생겼습니다.
+
+  실내라 화면으로는 못 보고, 절차적 하늘의 자체 컨트롤 값을 읽어서
+  알았습니다 — 흐림을 1.00 으로 올렸는데 엔진 쪽은 0.750 그대로.
+
+  매 프레임 PushIrisSky() 를 부르되 이미 넣은 하늘 객체는 기억해 두고
+  건너뜁니다. 매 프레임 덮어쓰면 엔진의 Procedural Sky 슬라이더가 먹지
+  않게 됩니다.
+
+  고친 뒤: 흐림 1.00 -> offset 0.000 · 흐림 0.00 -> offset 1.000
+
+그 밖에
+
+- 흐림은 엔진 값을 뒤집은 것입니다. cloud_density_offset 은 빼는 문턱값이라
+  1 이 맑음인데, 그 뒤집힘은 Settings::CloudDensityOffset() 한 군데에만
+  둡니다.
+- 슬라이더는 끄는 내내 바뀜을 돌려줍니다. 손을 뗄 때 한 번만 저장합니다
+  (화면 반영은 안 미룹니다).
+- 라벨은 영어입니다 — ImGui 폰트가 DroidSans-Mono 라틴 범위라 한글은 네모로
+  나옵니다.
+- 면광원·IES 는 씬 그래프를 만들 때 정해지므로 다음 sync 에 먹힙니다. 라벨에
+  적어 뒀습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp  |  35 +++------
+ Rtxpt/Iris/IrisSettings.h | 159 ++++++++++++++++++++++++++++++++++++++
+ Rtxpt/Sample.cpp          |  69 ++++++++++++-----
+ Rtxpt/Sample.h            |  21 +++++
+ Rtxpt/SampleUI.cpp        |  61 +++++++++++++++
+ Rtxpt/SampleUI.h          |   7 ++
+ 6 files changed, 309 insertions(+), 43 deletions(-)
+ create mode 100644 Rtxpt/Iris/IrisSettings.h
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 0638db3..23cad6a 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "IrisScene.h"
+ 
++#include "IrisSettings.h"
+ #include "../SampleCommon/LocalConfig.h"
+ 
+ #include "iris/bridge/IrisBridge.h"
+@@ -242,19 +243,13 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     // 골프존 모델은 정의 4종이 같은 Bega 8331 하나를 씁니다.
+     //
+     // 폭 = 세로각(0..180), 높이 = 가로각(-180..180). 셰이더가 그렇게 읽습니다.
+-    // 끄고 견줄 수 있게 둡니다 — 면광원과 같은 방식입니다. IRIS_IES=0.
+-    bool iesOn = true;
+-    {
+-        char*  buf = nullptr;
+-        size_t len = 0;
+-        if (_dupenv_s(&buf, &len, "IRIS_IES") == 0 && buf)
+-        {
+-            iesOn = !(buf[0] == '0' || buf[0] == 'n' || buf[0] == 'N');
+-            free(buf);
+-        }
+-        if (!iesOn)
+-            Trace("IES 배광 — 끔 (IRIS_IES=0), 원뿔 근사로 갑니다");
+-    }
++    // 끄고 견줄 수 있게 둡니다 — 면광원과 같은 방식입니다.
++    //
++    // IRIS 패널의 설정이 정하고, 환경변수 IRIS_IES=0 이 한 번만 덮어씁니다.
++    const bool iesOn =
++        iris::Settings::EnvOverride("IRIS_IES", iris::Settings::Get().iesProfiles);
++    if (!iesOn)
++        Trace("IES 배광 — 끔, 원뿔 근사로 갑니다");
+ 
+     if (iesOn)
+     builder.SetIesApplier(
+@@ -318,18 +313,12 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     //   ON   천장에 사각 패널·긴 라인 · 31.5 FPS · 분석 광원 479
+     //
+     // 성능은 같고 조명은 건축 조명처럼 보입니다. **켜는 것이 기본입니다.**
+-    // 끄려면 IRIS_AREA_LIGHTS=0. 정식 설정이 생기면 그쪽으로 옮깁니다.
++    // IRIS 패널의 설정이 정하고, 환경변수 IRIS_AREA_LIGHTS=0 이 덮어씁니다.
+     {
+-        char*  buf = nullptr;
+-        size_t len = 0;
+-        bool   on  = true;
+-        if (_dupenv_s(&buf, &len, "IRIS_AREA_LIGHTS") == 0 && buf)
+-        {
+-            on = !(buf[0] == '0' || buf[0] == 'n' || buf[0] == 'N');
+-            free(buf);
+-        }
++        const bool on = iris::Settings::EnvOverride(
++            "IRIS_AREA_LIGHTS", iris::Settings::Get().areaLightGeometry);
+         builder.SetAreaLightGeometry(on);
+-        Trace(on ? "면광원 — 발광 지오메트리" : "면광원 — 구면 근사 (IRIS_AREA_LIGHTS=0)");
++        Trace(on ? "면광원 — 발광 지오메트리" : "면광원 — 구면 근사");
+     }
+ 
+     // **태양이 있으면 하늘이 태양을 소유합니다.**
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+new file mode 100644
+index 0000000..8bed163
+--- /dev/null
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -0,0 +1,159 @@
++// IRIS — 호스트가 줄 수 없는 설정
++//
++// This software contains source code provided by NVIDIA Corporation.
++//
++// SketchUp 그림자 패널에는 **날짜·시각·위치**만 있습니다. 날씨도, 노출도,
++// 조명을 어떻게 변환할지도 없습니다. 그래서 이 값들은 호스트가 정할 수
++// 없고 IRIS 가 가져야 합니다.
++//
++// 지금까지는 코드에 박혀 있거나(구름 1.0, 자동 노출 켬) 환경변수였습니다
++// (IRIS_AREA_LIGHTS, IRIS_IES). 견주려고 급히 둔 것이라 사용자가 바꿀 수
++// 없고, 껐다 켜면 사라졌습니다. 한곳에 모으고 파일에 남깁니다.
++//
++// 헤더 하나로 끝냅니다 — CMake 가 GLOB 로 소스를 모으므로 .cpp 를 늘리면
++// 다시 구성해야 합니다.
++
++#pragma once
++
++#include <json/json.h>
++
++#include <cstdlib>
++#include <filesystem>
++#include <fstream>
++#include <string>
++
++namespace iris
++{
++    struct Settings
++    {
++        // ------------------------------------------------------------ 하늘
++        //
++        // **사용자에게는 '흐림'으로 보입니다.** 엔진의 값은
++        // `cloud_density_offset` 인데 이름과 반대로 동작합니다 — 빼는
++        // 문턱값이라 1 이 맑음이고 0 은 하늘 전체가 옅은 안개입니다
++        // (SampleProceduralSky.hlsli 의
++        //  `Density = max(0, Density - offset) / (1.001 - offset)`).
++        //
++        // 이름만 보고 "0 으로 내리면 구름이 없어진다"고 읽었다가 한참
++        // 헤맸습니다(09번 8-d). 밖으로는 뒤집어 보여 줍니다.
++        //
++        //   흐림 0 = 맑음(offset 1)  ·  흐림 1 = 옅은 안개(offset 0)
++        float cloudiness = 0.0f;
++
++        // ------------------------------------------------------------ 노출
++        //
++        // 호스트가 준 광원 값은 Enscape 의 자동 노출 **위에서** 만들어진
++        // 것입니다. 고정 노출로 읽으면 타 버립니다(09번 8-c).
++        bool  autoExposure         = true;
++        float exposureCompensation = 0.0f;   // 스톱
++
++        // -------------------------------------------- 조명을 어떻게 변환할까
++        //
++        // 둘 다 **씬을 다시 받아야** 적용됩니다 — 씬 그래프를 만들 때
++        // 정해지기 때문입니다.
++        bool areaLightGeometry = true;   // 사각·선형을 발광 사각형으로 (09번 8-f)
++        bool iesProfiles       = true;   // IES 배광을 텍스처로 (09번 8-g)
++
++        // 엔진이 실제로 쓰는 값. 뒤집힌 의미를 한곳에서만 다룹니다.
++        [[nodiscard]] float CloudDensityOffset() const
++        {
++            const float c = (cloudiness < 0.0f) ? 0.0f : (cloudiness > 1.0f ? 1.0f : cloudiness);
++            return 1.0f - c;
++        }
++
++        // ------------------------------------------------------------ 보관
++
++        static std::filesystem::path Path()
++        {
++            char*  buf = nullptr;
++            size_t len = 0;
++            std::filesystem::path base;
++            if (_dupenv_s(&buf, &len, "LOCALAPPDATA") == 0 && buf)
++            {
++                base = buf;
++                free(buf);
++            }
++            if (base.empty())
++                return {};
++            return base / "IRIS" / "settings.json";
++        }
++
++        void Load()
++        {
++            const auto p = Path();
++            if (p.empty())
++                return;
++            std::ifstream f(p);
++            if (!f.good())
++                return;
++            Json::Value  root;
++            Json::CharReaderBuilder b;
++            std::string  err;
++            if (!Json::parseFromStream(b, f, &root, &err) || !root.isObject())
++                return;   // 깨진 파일은 조용히 무시하고 기본값으로 갑니다
++
++            auto num = [&](const char* k, float d) {
++                return root[k].isNumeric() ? root[k].asFloat() : d;
++            };
++            auto flag = [&](const char* k, bool d) {
++                return root[k].isBool() ? root[k].asBool() : d;
++            };
++
++            cloudiness           = num("cloudiness", cloudiness);
++            autoExposure         = flag("auto_exposure", autoExposure);
++            exposureCompensation = num("exposure_compensation", exposureCompensation);
++            areaLightGeometry    = flag("area_light_geometry", areaLightGeometry);
++            iesProfiles          = flag("ies_profiles", iesProfiles);
++        }
++
++        void Save() const
++        {
++            const auto p = Path();
++            if (p.empty())
++                return;
++            std::error_code ec;
++            std::filesystem::create_directories(p.parent_path(), ec);
++
++            Json::Value root;
++            root["cloudiness"]            = cloudiness;
++            root["auto_exposure"]         = autoExposure;
++            root["exposure_compensation"] = exposureCompensation;
++            root["area_light_geometry"]   = areaLightGeometry;
++            root["ies_profiles"]          = iesProfiles;
++
++            std::ofstream f(p, std::ios::trunc);
++            if (!f.good())
++                return;
++            Json::StreamWriterBuilder b;
++            b["indentation"] = "  ";
++            f << Json::writeString(b, root);
++        }
++
++        // 프로세스 하나에 하나. 처음 부를 때 파일에서 읽습니다.
++        static Settings& Get()
++        {
++            static Settings s = [] {
++                Settings t;
++                t.Load();
++                return t;
++            }();
++            return s;
++        }
++
++        // 환경변수는 **시험용 덮어쓰기**로 남깁니다. 설정 파일을 건드리지
++        // 않고 한 번만 다르게 띄울 수 있어야 A/B 가 편합니다.
++        //   IRIS_AREA_LIGHTS=0 · IRIS_IES=0
++        static bool EnvOverride(const char* name, bool current)
++        {
++            char*  buf = nullptr;
++            size_t len = 0;
++            bool   v   = current;
++            if (_dupenv_s(&buf, &len, name) == 0 && buf)
++            {
++                v = !(buf[0] == '0' || buf[0] == 'n' || buf[0] == 'N');
++                free(buf);
++            }
++            return v;
++        }
++    };
++}
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 1e81b50..feea350 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -11,6 +11,7 @@
+ #include "Sample.h"
+ 
+ #include "Iris/IrisScene.h"       // IRIS: .irisb 씬 로딩
++#include "Iris/IrisSettings.h"    // IRIS: 하늘·노출 설정
+ #include "iris/bridge/IrisBridge.h" // IRIS: 라이브 링크
+ 
+ #include <donut/engine/FramebufferFactory.h>
+@@ -557,6 +558,41 @@ static bool IsIrisScene(const std::filesystem::path& scenePath)
+     return s.size() > ext.size() && s.compare(s.size() - ext.size(), ext.size(), ext) == 0;
+ }
+ 
++bool Sample::IsIrisScene() const
++{
++    return ::IsIrisScene(m_currentScenePath);
++}
++
++// IRIS 설정을 화면에 반영합니다.
++//
++// **한 군데서만 적용합니다.** 씬을 열 때와 사용자가 IRIS 패널을 움직일 때가
++// 같은 코드를 지나야, 열었을 때와 만졌을 때가 어긋나지 않습니다.
++void Sample::ApplyIrisSettings()
++{
++    const iris::Settings& s = iris::Settings::Get();
++
++    m_ui.ToneMappingParams.autoExposure         = s.autoExposure;
++    m_ui.ToneMappingParams.exposureCompensation = s.exposureCompensation;
++
++    // 하늘은 지금 없을 수도 있습니다. 기억을 지워 두면 PushIrisSky 가
++    // 생기는 즉시 — 또는 지금 바로 — 밀어 넣습니다.
++    m_irisSkyApplied = nullptr;
++    PushIrisSky();
++}
++
++void Sample::PushIrisSky()
++{
++    if (m_envMapBaker == nullptr)
++        return;
++    const SampleProceduralSky* sky = m_envMapBaker->GetProceduralSky().get();
++    if (sky == nullptr || sky == m_irisSkyApplied)
++        return;
++
++    m_envMapBaker->GetProceduralSky()->SetCloudDensityOffset(
++        iris::Settings::Get().CloudDensityOffset());
++    m_irisSkyApplied = sky;
++}
++
+ void Sample::SceneLoaded( )
+ {
+     m_frameIndex = 0;
+@@ -597,26 +633,14 @@ void Sample::SceneLoaded( )
+     //
+     // 보정을 0 으로 되돌립니다. 위의 +2 스톱은 엔진 예제 씬(어두운 편)에
+     // 맞춘 값이라, 자동 노출이 이미 맞춘 밝기에 다시 네 배가 됩니다.
+-    if (IsIrisScene(m_currentScenePath))
+-    {
+-        m_ui.ToneMappingParams.autoExposure = true;
+-        m_ui.ToneMappingParams.exposureCompensation = 0.0f;
+-
+-        // 하늘은 **맑게** 시작합니다.
+-        //
+-        // 엔진 기본값 0.75 는 짙은 구름을 만들고, 그러면 태양이 흩어져
+-        // 그림자가 사라집니다 — 실외 모델에서 "그림자가 왜 없나"로 한참
+-        // 헤맸습니다. 건축 프레젠테이션은 대개 맑은 날을 씁니다.
+-        //
+-        // ⚠ 이 값은 **빼는 문턱값**이라 이름과 반대입니다. 1.0 이 맑음이고
+-        //   0.0 은 구름 없음이 아니라 하늘 전체에 옅은 안개입니다.
+-        //
+-        // SketchUp 그림자 패널에는 날짜·시각·위치만 있고 날씨가 없습니다.
+-        // 그래서 이건 호스트가 아니라 IRIS 가 정할 자리입니다 — 나중에
+-        // 자체 설정으로 뺍니다.
+-        if (m_envMapBaker != nullptr && m_envMapBaker->GetProceduralSky() != nullptr)
+-            m_envMapBaker->GetProceduralSky()->SetCloudDensityOffset(1.0f);
+-    }
++    //
++    // 하늘도 여기서 정합니다. SketchUp 그림자 패널에는 날짜·시각·위치만
++    // 있고 **날씨가 없습니다.** 그래서 호스트가 아니라 IRIS 가 정할
++    // 자리입니다 — 기본은 맑음이고, 사용자는 IRIS 패널에서 바꿉니다.
++    // (엔진 기본값 0.75 는 짙은 구름이라 태양이 흩어지고 그림자가
++    //  사라집니다 — 실외 모델에서 "그림자가 왜 없나"로 한참 헤맸습니다.)
++    if (IsIrisScene())
++        ApplyIrisSettings();
+ 
+     std::shared_ptr<EnvironmentLight> envLight = FindEnvironmentLight(m_lights);
+     m_envMapLocalPath = (envLight==nullptr)?(""):(envLight->path);
+@@ -845,6 +869,11 @@ void Sample::Animate(float fElapsedTimeSeconds)
+     // 카메라만 옮기면 세로 화각만 같고 좌우로 더/덜 보입니다.
+     iris::bridge::IrisBridge::Get().SetDisplaySize(uint32_t(m_displaySize.x), uint32_t(m_displaySize.y));
+ 
++    // IRIS: 하늘이 뒤늦게 생기면 그때 흐림을 넘겨줍니다. 같은 하늘에는
++    // 한 번만 씁니다 — 자세한 이유는 Sample.h 의 PushIrisSky 주석.
++    if (IsIrisScene())
++        PushIrisSky();
++
+     if (iris::bridge::IrisBridge::Get().HasPendingCamera())
+     {
+         const auto c = iris::bridge::IrisBridge::Get().TakePendingCamera();
+diff --git a/Rtxpt/Sample.h b/Rtxpt/Sample.h
+index 022b3d6..b214fb7 100644
+--- a/Rtxpt/Sample.h
++++ b/Rtxpt/Sample.h
+@@ -176,6 +176,23 @@ public:
+ 
+     bool                                    AccumulationCompleted() const       { return m_accumulationCompleted; }
+ 
++    // IRIS — 지금 열린 씬이 호스트(SketchUp)에서 온 것인가.
++    // UI 가 IRIS 항목을 보일지 정할 때와, 설정을 적용할 때 씁니다.
++    bool                                    IsIrisScene() const;
++
++    // IRIS 설정(하늘·노출)을 지금 화면에 반영합니다. 씬을 열 때와
++    // 사용자가 슬라이더를 움직일 때 같은 경로를 씁니다.
++    void                                    ApplyIrisSettings();
++
++    // 흐림을 절차적 하늘에 밀어 넣습니다. **매 프레임 부릅니다.**
++    //
++    // 하늘 객체는 뒤늦게 생깁니다 — 환경맵 경로가 절차적 하늘이 될 때에야
++    // 만들어집니다(EnvMapBaker.cpp:421). 실내 모델처럼 그림자가 꺼진 채로
++    // 열면 씬을 읽는 시점에는 아직 없고, 나중에 태양이 들어오면서 엔진
++    // 기본값(0.75, 짙은 구름)으로 새로 생깁니다. 그래서 한 번 적용으로는
++    // 놓칩니다. 실제로 놓쳤습니다.
++    void                                    PushIrisSky();
++
+ protected:
+     // Called when render targets have been recreated (e.g. after window resize)
+     virtual void OnRenderTargetsRecreated() { }
+@@ -261,6 +278,10 @@ private:
+ 
+     std::shared_ptr<EnvMapBaker>                m_envMapBaker;
+     EnvMapSceneParams                           m_envMapSceneParams;
++
++    // 흐림을 이미 밀어 넣은 하늘 객체. 같은 객체면 다시 안 씁니다 —
++    // 매 프레임 덮어쓰면 엔진의 Procedural Sky 슬라이더가 먹히지 않습니다.
++    const class SampleProceduralSky*            m_irisSkyApplied = nullptr;
+     std::shared_ptr<LightsBaker>                m_lightsBaker;
+     std::shared_ptr<class MaterialsBaker>       m_materialsBaker;
+     std::shared_ptr<class OmmBaker>             m_ommBaker;
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index 3365c9f..c06c802 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -30,6 +30,8 @@
+ 
+ #include "SampleCommon/CaptureScriptManager.h"
+ 
++#include "Iris/IrisSettings.h"    // IRIS: 하늘·노출·조명 변환 설정
++
+ using namespace donut::app;
+ using namespace donut::engine;
+ 
+@@ -419,6 +421,65 @@ void SampleUI::buildUI(void)
+             return;
+         }
+ 
++        // IRIS — 호스트가 줄 수 없는 것들.
++        //
++        // SketchUp 그림자 패널에는 **날짜·시각·위치만** 있습니다. 날씨도,
++        // 노출도, 조명을 어떻게 변환할지도 없습니다. 그래서 이 값들은 여기가
++        // 자리입니다. 호스트 씬일 때만 보입니다 — 엔진 예제 씬에는 뜻이
++        // 없는 항목들입니다.
++        //
++        // ⚠ 라벨은 **영어로** 씁니다. ImGui 폰트가 DroidSans-Mono 이고
++        //   기본 글리프 범위(라틴)로 올라가 한글은 네모로 나옵니다.
++        if (m_app.IsIrisScene() && ImGui::CollapsingHeader("IRIS", ImGuiTreeNodeFlags_DefaultOpen))
++        {
++            RAII_SCOPE(ImGui::Indent(indent); , ImGui::Unindent(indent); );
++
++            iris::Settings& s     = iris::Settings::Get();
++            bool            apply = false;   // 하늘·노출은 바로 반영합니다
++
++            ImGui::SeparatorText("Sky");
++            // 밖으로는 '흐림'입니다. 엔진의 cloud_density_offset 은 빼는
++            // 문턱값이라 1 이 맑음인데, 그 뒤집힘은 Settings 안에 가둡니다.
++            if (ImGui::SliderFloat("Cloudiness", &s.cloudiness, 0.0f, 1.0f, "%.2f"))
++                apply = m_irisSettingsDirty = true;
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("0 = clear sky (sharp sun shadows)\n1 = overcast haze (shadows dissolve)\n\nSketchUp has no weather setting, so IRIS owns this.");
++
++            ImGui::SeparatorText("Exposure");
++            // 호스트 광원 값은 Enscape 의 자동 노출 위에서 만들어진 것이라
++            // 고정 노출로 읽으면 타 버립니다(09번 8-c).
++            if (ImGui::Checkbox("Auto exposure", &s.autoExposure))
++                apply = m_irisSettingsDirty = true;
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Host light values were authored under Enscape's auto exposure.\nTurning this off will blow out most scenes.");
++            {
++                UI_SCOPED_DISABLE(!s.autoExposure);
++                if (ImGui::SliderFloat("Exposure compensation", &s.exposureCompensation, -4.0f, 4.0f, "%.2f EV"))
++                    apply = m_irisSettingsDirty = true;
++            }
++
++            ImGui::SeparatorText("Light conversion");
++            // 둘 다 씬 그래프를 만들 때 정해집니다 — 지금 화면은 안 바뀝니다.
++            if (ImGui::Checkbox("Area lights as emissive geometry", &s.areaLightGeometry))
++                m_irisSettingsDirty = true;
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Rectangular and linear lights become emissive quads\ninstead of equal-area spheres.\n\nApplies on the next sync from SketchUp.");
++            if (ImGui::Checkbox("IES photometric profiles", &s.iesProfiles))
++                m_irisSettingsDirty = true;
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Use the luminaire's measured distribution instead of a cone.\n\nApplies on the next sync from SketchUp.");
++
++            if (apply)
++                m_app.ApplyIrisSettings();
++
++            // 손을 뗀 뒤에 한 번만 씁니다.
++            if (m_irisSettingsDirty && !ImGui::IsAnyItemActive())
++            {
++                s.Save();
++                m_irisSettingsDirty = false;
++            }
++        }
++
+         if (ImGui::CollapsingHeader("Display and performance")) //, ImGuiTreeNodeFlags_DefaultOpen))
+         {
+             RAII_SCOPE(ImGui::Indent(indent);, ImGui::Unindent(indent); );
+diff --git a/Rtxpt/SampleUI.h b/Rtxpt/SampleUI.h
+index 99a4ebe..21f4cb4 100644
+--- a/Rtxpt/SampleUI.h
++++ b/Rtxpt/SampleUI.h
+@@ -355,6 +355,13 @@ private:
+     SampleUIData& m_ui;
+     nvrhi::CommandListHandle m_commandList;
+ 
++    // IRIS 설정이 바뀌었고 아직 파일에 안 남았다.
++    //
++    // 슬라이더는 **끄는 내내** 바뀜을 돌려줍니다. 그때마다 저장하면 매
++    // 프레임 디스크에 씁니다. 손을 뗄 때까지(활성 위젯이 없어질 때까지)
++    // 미룹니다. 화면 반영은 미루지 않습니다 — 끌면서 보여야 하니까요.
++    bool m_irisSettingsDirty = false;
++
+     const bool m_NVAPI_SERSupported;
+ 
+ #if ENABLE_DEBUG_DELTA_TREE_VIZUALISATION

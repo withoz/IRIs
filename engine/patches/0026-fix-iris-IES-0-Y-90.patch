@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Fri, 11 Sep 2026 16:22:23 +0900
+Subject: [PATCH 26/34] =?UTF-8?q?fix(iris):=20IES=20=EA=B0=80=EB=A1=9C?=
+ =?UTF-8?q?=EA=B0=81=200=EB=8F=84=EB=8A=94=20=ED=94=84=EB=A1=9D=EC=8B=9C?=
+ =?UTF-8?q?=EC=9D=98=20=EB=A1=9C=EC=BB=AC=20+Y=20=EC=98=80=EC=8A=B5?=
+ =?UTF-8?q?=EB=8B=88=EB=8B=A4=20=E2=80=94=2090=EB=8F=84=20=EC=96=B4?=
+ =?UTF-8?q?=EA=B8=8B=EB=82=98=20=EC=9E=88=EC=97=88=EC=8A=B5=EB=8B=88?=
+ =?UTF-8?q?=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+통제된 시험으로 잡았습니다.
+
+  방 7.6 x 7.6 x 6.35 m · 바닥 흰색 · 벽·천장 어두움(빛 샐 곳 없음)
+  Bega 8331WIDE 하나, 바닥에서 2.3 m, 똑바로 아래
+  로컬 +X -> 월드 +X · 천장에서 수직으로 내려다봄
+  태양 끔 · 양쪽 다 자동 노출 끄고 낮게 고정
+
+  Enscape          바닥 웅덩이가 월드 X 로 길쭉 (약 1.64 : 1)
+  IRIS (+X 기준)   월드 Y 로 길쭉 — 직각으로 어긋남
+  IRIS (+90도)     Enscape 와 같음
+
+1.64 : 1 은 배광 자체의 29.8도 : 18.0도 와 맞습니다.
+
+고침은 tangent 를 row0(로컬 +X)에서 row1(로컬 +Y)로 옮기는 것입니다.
+부호를 되돌리는 이유는 광원 잎이 X축 180도 회전한 자식 노드에 달려
+있기 때문입니다(SceneBuilder.cpp — 프록시 정면이 로컬 +Z). 그 회전이 Y 를
+뒤집습니다. 사분·좌우 대칭 배광에서는 무의미하지만 가로각 0~360 짜리
+완전 비대칭 배광에서는 180도 어긋납니다.
+
+고친 뒤 같은 시험에서 오프셋 없이 Enscape 와 일치합니다.
+
+앞선 두 번의 판단이 틀렸습니다
+
+  1. 배치 분석으로 "우리 기준이 맞다"고 결론냈습니다. 그 배치는 어느
+     쪽으로 읽어도 설계로 설명됩니다 — 넓은 축을 줄 방향으로(고르게 덮기)
+     도, 좁은 축을 줄 방향으로(겹침 피하기)도. 한 방향으로만 읽히지 않는
+     근거는 증거가 못 됩니다.
+
+  2. 실제 장면 A/B 를 자동 노출로 찍고 "0도가 더 닮았다"고 읽었습니다.
+     톤매퍼가 만든 차이였습니다.
+
+IRIS_IES_ROLL_DEG 스위치는 남겨 둡니다 — 이번 판정에 쓴 도구이고,
+다음에 같은 의심이 생기면 그대로 씁니다.
+
+경위는 IRIS 저장소 docs/09-조명-설계.md 8-g 「통제 시험」.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Lighting/LightsBaker.cpp | 31 ++++++++++++++++++++++++++-----
+ 1 file changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/Rtxpt/Lighting/LightsBaker.cpp b/Rtxpt/Lighting/LightsBaker.cpp
+index 9502dad..5965877 100644
+--- a/Rtxpt/Lighting/LightsBaker.cpp
++++ b/Rtxpt/Lighting/LightsBaker.cpp
+@@ -513,16 +513,37 @@ static PolymorphicLightInfoFull ConvertLight( Light & light )
+                     // 각도로 돌아간 채 그려집니다. 그럴듯하고 눈으로는 못
+                     // 잡습니다.
+                     //
+-                    // 노드 변환의 row0 가 기구의 로컬 +X 이고, 그것이 IES 의
+-                    // 가로각 0도 평면입니다. 그 방향이 ONB 기저에서 몇 도에
+-                    // 있는지를 실어 보내면 셰이더가 빼서 맞춥니다.
++                    // **IES 가로각 0도는 프록시의 로컬 +Y 입니다.**
++                    //
++                    // 처음에는 +X 라고 봤습니다. **틀렸습니다.** 통제된
++                    // 시험으로 확정했습니다(IRIS 저장소 docs/09 8-g):
++                    //
++                    //   빈 모델 · 흰 바닥 · 빛 샐 곳 없는 어두운 방 ·
++                    //   IES 조명 하나를 로컬 +X 가 월드 +X 를 보도록 놓고
++                    //   똑바로 아래로. 천장에서 수직으로 내려다봄.
++                    //
++                    //   Enscape  바닥 웅덩이가 **월드 X 로 길쭉** (1.64 : 1)
++                    //   IRIS(+X) 바닥 웅덩이가 **월드 Y 로 길쭉** — 직각으로 어긋남
++                    //   IRIS(+Y) Enscape 와 같음
++                    //
++                    // 배광이 사분 대칭(가로각 0~90)이라 180도는 자기 자신입니다.
++                    // 틀릴 수 있는 각도가 90도 하나뿐이었고, 그 하나로 틀려
++                    // 있었습니다. 넓은 축(29.8도)과 좁은 축(18.0도)이 통째로
++                    // 뒤바뀐 채 그려지고 있었습니다.
++                    //
++                    // ⚠ 광원 잎은 **X축 180도 회전한 자식 노드**에 달려
++                    //   있습니다(SceneBuilder.cpp — 프록시 정면이 로컬 +Z 라서).
++                    //   그 회전이 Y 를 뒤집으므로 자식의 row1 은 프록시의 -Y
++                    //   입니다. 부호를 되돌립니다. 사분/좌우 대칭 배광에서는
++                    //   차이가 없지만, 가로각 0~360 짜리 완전 비대칭 배광에서는
++                    //   180도 어긋납니다.
+                     //
+                     // 자리는 Base.Scalars 의 **상위 16비트**입니다 — 구면
+                     // 광원은 하위 16비트(radius)만 씁니다. 구조를 안 늘립니다.
+                     const float3 axis = normalize(float3(spot.GetDirection()));
+-                    float3 tangent = float3(1.0f, 0.0f, 0.0f);
++                    float3 tangent = float3(0.0f, 1.0f, 0.0f);
+                     if (auto node = spot.GetNode())
+-                        tangent = float3(node->GetLocalToWorldTransform().m_linear.row0);
++                        tangent = -float3(node->GetLocalToWorldTransform().m_linear.row1);
+ 
+                     // 셰이더와 **같은 식**이어야 합니다(LightShaping.hlsli).
+                     const float onbSign = (axis.z >= 0.0f) ? 1.0f : -1.0f;

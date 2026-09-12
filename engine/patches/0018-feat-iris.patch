@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Thu, 10 Sep 2026 17:31:01 +0900
+Subject: [PATCH 18/34] =?UTF-8?q?feat(iris):=20=ED=98=B8=EC=8A=A4=ED=8A=B8?=
+ =?UTF-8?q?=20=EC=94=AC=EC=9D=80=20=EC=9E=90=EB=8F=99=20=EB=85=B8=EC=B6=9C?=
+ =?UTF-8?q?=EB=A1=9C=20=EB=B4=85=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+호스트가 준 광원 값은 Enscape 의 자동 노출 **위에서** 만들어진 것입니다.
+포르쉐 성수 모델은 사각 광원 39종 중 38종이 정확히 300,000 lm 입니다
+(실측) — 작성자가 슬라이더를 밀어 두고 자동 노출에 맡긴 것입니다.
+고정 노출로 읽으면 같은 자료가 타 버립니다. 광원 값을 의심할 일이
+아니라 노출을 붙일 일이었습니다.
+
+단위는 실험으로 확정했습니다 — Enscape UI 에 1000 을 넣으면 1000,
+2000 을 넣으면 2000 이 저장됩니다. 1:1 이고 우리가 읽는 방식이 맞습니다.
+
+보정은 0 으로 되돌립니다. 바로 위에서 넣는 +2 스톱은 예제 씬(어두운 편)
+에 맞춘 값이라, 자동 노출이 이미 맞춘 밝기에 다시 네 배가 됩니다.
+
+IsIrisScene 은 **파일 이름**으로 견줍니다. m_currentScenePath 는
+GetLocalPath(c_AssetsFolder) / sceneName 이라 앞에 자산 폴더가 붙습니다.
+전체 경로를 견주는 첫 판은 라이브 링크에서 영영 안 맞으면서 빌드는
+통과했습니다 — 조용히 아무 일도 일어나지 않는 종류입니다.
+
+씬 카메라는 덮어쓰지 않습니다. UpdateCameraFromScene 은
+PerspectiveCameraEx 일 때만 노출을 건드리는데 SceneBuilder 는 평범한
+PerspectiveCamera 를 만듭니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Sample.cpp | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index e83da71..029f518 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -540,6 +540,23 @@ void Sample::CollectUncompressedTextures()
+         listUncompressedTextureIfNeeded(textureIT.second.Loaded, textureIT.second.NormalMap);
+ }
+ 
++// IRIS: 이 씬이 우리 것인가.
++//
++// 파일(.irisb)일 수도 있고 파이프로 받은 바이트(kLiveSceneName)일 수도
++// 있습니다. 둘 다 같은 자료라 노출 취급도 같아야 합니다.
++static bool IsIrisScene(const std::filesystem::path& scenePath)
++{
++    // ⚠ **파일 이름으로 견줍니다.** m_currentScenePath 는
++    // `GetLocalPath(c_AssetsFolder) / sceneName` 이라 앞에 자산 폴더가
++    // 붙습니다(SetCurrentScene). 전체 경로를 그대로 견주면 라이브 링크에서
++    // 영영 안 맞고, 조용히 아무 일도 일어나지 않습니다.
++    const std::string s = scenePath.string();
++    if (scenePath.filename().string() == iris::bridge::kLiveSceneName)
++        return true;
++    const std::string ext = ".irisb";
++    return s.size() > ext.size() && s.compare(s.size() - ext.size(), ext.size(), ext) == 0;
++}
++
+ void Sample::SceneLoaded( )
+ {
+     m_frameIndex = 0;
+@@ -569,6 +586,23 @@ void Sample::SceneLoaded( )
+     m_ui.ToneMappingParams.exposureCompensation = 2.0f;
+     m_ui.ToneMappingParams.exposureValue = 0.0f;
+ 
++    // IRIS: 호스트 씬은 **자동 노출**로 봅니다.
++    //
++    // 호스트가 준 광원 값은 Enscape 의 자동 노출 **위에서** 만들어진
++    // 것입니다. 포르쉐 성수 모델은 사각 광원 39종 중 38종이 정확히
++    // 300,000 lm 입니다(실측) — 작성자가 슬라이더를 밀어 두고 자동 노출에
++    // 맡긴 것입니다. 고정 노출로 읽으면 같은 자료가 타 버립니다.
++    // 광원 값을 의심할 일이 아니라 노출을 붙일 일이었습니다.
++    // 경위는 docs/09-조명-설계.md 8-c 절.
++    //
++    // 보정을 0 으로 되돌립니다. 위의 +2 스톱은 엔진 예제 씬(어두운 편)에
++    // 맞춘 값이라, 자동 노출이 이미 맞춘 밝기에 다시 네 배가 됩니다.
++    if (IsIrisScene(m_currentScenePath))
++    {
++        m_ui.ToneMappingParams.autoExposure = true;
++        m_ui.ToneMappingParams.exposureCompensation = 0.0f;
++    }
++
+     std::shared_ptr<EnvironmentLight> envLight = FindEnvironmentLight(m_lights);
+     m_envMapLocalPath = (envLight==nullptr)?(""):(envLight->path);
+     m_ui.EnvironmentMapParams = EnvironmentMapRuntimeParameters();

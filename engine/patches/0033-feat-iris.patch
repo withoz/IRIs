@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 13:39:53 +0900
+Subject: [PATCH 33/34] =?UTF-8?q?feat(iris):=20=EC=A0=80=EC=9E=A5=EB=90=9C?=
+ =?UTF-8?q?=20=EC=9E=AC=EC=A7=88=20=EB=8D=AE=EC=96=B4=EC=93=B0=EA=B8=B0?=
+ =?UTF-8?q?=EB=A5=BC=20=EC=A7=80=EC=9A=B0=EB=8A=94=20=EB=8B=A8=EC=B6=94?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+IRIS 11번 11.6. .material.json 이 있으면 그 값이 호스트가 보낸 것을 통째로
+이깁니다(실측). 라이브 링크에서는 "SketchUp 에서 고쳐도 화면이 안 바뀐다"로
+보이고, 빠져나올 길이 탐색기로 파일을 찾아 지우는 것뿐이었습니다.
+
+  IRIS > Saved material overrides
+    없을 때   None - SketchUp values are in use.
+    있을 때   N saved file(s) are overriding SketchUp
+              [ Delete overrides for this model ]
+
+범위를 좁혔습니다. 이름으로 훑지 않고 **지금 씬에 실제로 있는 재질**의
+저장 경로만 봅니다(IrisOverrideFiles). 시험에서 심은 2개만 지워지고 배포된
+예제 497개는 그대로였습니다. 지우기 전에 확인 대화상자가 뜨고 파일 목록과
+"되돌릴 수 없습니다"를 보여 줍니다.
+
+지운 뒤 호스트 값을 되찾는 데는 브리지 쪽 ForgetLastScene() 이 필요합니다
+(IRIS 커밋) — 씬 바이트가 같아 지문에 걸리기 때문입니다.
+
+알려진 한계: ImGui 글꼴이 DroidSans-Mono(라틴 전용)라 파일 목록의 한글이
+네모로 보입니다. 개수와 폴더 경로로는 확인할 수 있습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Materials/MaterialsBaker.cpp | 39 ++++++++++++++
+ Rtxpt/Materials/MaterialsBaker.h   | 13 +++++
+ Rtxpt/SampleUI.cpp                 | 84 ++++++++++++++++++++++++++++++
+ 3 files changed, 136 insertions(+)
+
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index 7a368d7..a914a14 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -1225,6 +1225,45 @@ bool MaterialsBaker::SaveSingle(PTMaterialBase & material)
+     return true;
+ }
+ 
++// IRIS: 지금 씬 재질에 해당하는 저장 파일만 모읍니다. 자세한 이유는 헤더 주석.
++std::vector<std::filesystem::path> MaterialsBaker::IrisOverrideFiles()
++{
++    std::vector<std::filesystem::path> found;
++    for (auto& materialPT : m_materials)
++    {
++        if (materialPT == nullptr)
++            continue;
++        std::error_code ec;
++        const std::filesystem::path p = GetMaterialStoragePath(*materialPT);
++        if (std::filesystem::exists(p, ec) && !ec)
++            found.push_back(p);
++    }
++    return found;
++}
++
++int MaterialsBaker::IrisDeleteOverrides()
++{
++    int removed = 0;
++    for (const auto& p : IrisOverrideFiles())
++    {
++        std::error_code ec;
++        if (std::filesystem::remove(p, ec) && !ec)
++        {
++            ++removed;
++            donut::log::info("IRIS: 재질 덮어쓰기를 지웠습니다 — %s", p.string().c_str());
++        }
++        else
++        {
++            donut::log::warning("IRIS: 재질 덮어쓰기를 못 지웠습니다 — %s (%s)",
++                                p.string().c_str(), ec.message().c_str());
++        }
++    }
++    if (removed > 0)
++        donut::log::info("IRIS: 덮어쓰기 %d개를 지웠습니다. SketchUp 에서 다시 보내면 "
++                         "호스트 값으로 돌아갑니다.", removed);
++    return removed;
++}
++
+ void MaterialsBaker::SaveAll()
+ {
+ #if 0
+diff --git a/Rtxpt/Materials/MaterialsBaker.h b/Rtxpt/Materials/MaterialsBaker.h
+index 6a693ae..7a29e08 100644
+--- a/Rtxpt/Materials/MaterialsBaker.h
++++ b/Rtxpt/Materials/MaterialsBaker.h
+@@ -268,6 +268,19 @@ public:
+ 
+     std::shared_ptr<PTMaterial>     FindByUniqueID(const std::string & name);
+ 
++    // IRIS: **저장된 재질 덮어쓰기를 되돌립니다.**
++    //
++    // `.material.json` 이 있으면 그 값이 호스트가 보낸 것을 통째로 이깁니다
++    // (CreateRenderPassesAndLoadMaterials 의 `PTMaterial = loaded`).
++    // 라이브 링크에서는 그것이 "SketchUp 에서 고쳐도 화면이 안 바뀐다"로
++    // 보이고, 빠져나올 길이 탐색기로 파일을 찾아 지우는 것뿐이었습니다.
++    //
++    // **범위를 좁힙니다.** 지금 씬에 실제로 있는 재질의 파일만 봅니다 —
++    // 이름으로 훑지 않습니다. 그래야 배포된 예제 497개나 다른 모델의
++    // 저장본을 건드리지 않습니다.
++    std::vector<std::filesystem::path>  IrisOverrideFiles();
++    int                                 IrisDeleteOverrides();   // 지운 개수
++
+ private:
+     void                            Clear();
+ 
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index d90950d..a922409 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -20,6 +20,12 @@
+ #include <imgui_internal.h>
+ #include "Materials\MaterialsBaker.h"
+ 
++#include <algorithm>   // IRIS: 덮어쓰기 목록
++#include "iris/bridge/IrisBridge.h"   // IRIS: 덮어쓰기를 지운 뒤 같은 씬을 다시 받기
++
++#include <filesystem>
++#include <vector>
++
+ #include "ToneMapper/ToneMappingPasses.h"
+ #include "Misc/Korgi.h"
+ 
+@@ -521,6 +527,84 @@ void SampleUI::buildUI(void)
+             if (ImGui::IsItemHovered())
+                 ImGui::SetTooltip("Use the luminaire's measured distribution instead of a cone.\n\nApplies on the next sync from SketchUp.");
+ 
++            // ---------------------------------------------------- 덮어쓰기
++            //
++            // 저장된 `.material.json` 이 있으면 그 값이 호스트가 보낸 것을
++            // **통째로 이깁니다**(11번 11.6, 실측). 라이브 링크에서는 그것이
++            // "SketchUp 에서 고쳐도 화면이 안 바뀐다"로 보이고, 빠져나올
++            // 길이 탐색기로 파일을 찾아 지우는 것뿐이었습니다.
++            //
++            // 파일 존재 검사를 매 프레임 재질 수만큼 돌리지 않습니다 —
++            // 필요할 때만 세어 둡니다.
++            ImGui::SeparatorText("Saved material overrides");
++            {
++                static std::vector<std::filesystem::path> s_overrides;
++                static int  s_pollCountdown = 0;
++                static bool s_scanned       = false;
++
++                MaterialsBaker* baker = m_app.GetMaterialsBaker().get();
++                if (baker != nullptr && (--s_pollCountdown <= 0))
++                {
++                    s_overrides     = baker->IrisOverrideFiles();
++                    s_scanned       = true;
++                    s_pollCountdown = 120;   // 2초에 한 번이면 충분합니다
++                }
++
++                if (baker == nullptr || !s_scanned)
++                {
++                    ImGui::TextDisabled("(scene not loaded)");
++                }
++                else if (s_overrides.empty())
++                {
++                    ImGui::TextDisabled("None - SketchUp values are in use.");
++                }
++                else
++                {
++                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
++                    ImGui::Text("%d saved file(s) are overriding SketchUp",
++                                (int)s_overrides.size());
++                    ImGui::PopStyleColor();
++                    if (ImGui::Button("Delete overrides for this model"))
++                        ImGui::OpenPopup("IRIS delete overrides");
++                    if (ImGui::IsItemHovered())
++                        ImGui::SetTooltip("Saved material files replace everything the host sends -\n"
++                                          "colour, roughness, transmission, textures.\n\n"
++                                          "Only files belonging to materials in THIS model are\n"
++                                          "touched. Shipped sample materials are never deleted.");
++                }
++
++                if (ImGui::BeginPopupModal("IRIS delete overrides", nullptr,
++                                           ImGuiWindowFlags_AlwaysAutoResize))
++                {
++                    ImGui::Text("Delete %d saved material file(s)?", (int)s_overrides.size());
++                    ImGui::Separator();
++                    const int show = std::min<int>((int)s_overrides.size(), 8);
++                    for (int i = 0; i < show; i++)
++                        ImGui::TextDisabled("%s", s_overrides[i].filename().string().c_str());
++                    if ((int)s_overrides.size() > show)
++                        ImGui::TextDisabled("... and %d more", (int)s_overrides.size() - show);
++                    ImGui::Separator();
++                    ImGui::TextWrapped("This cannot be undone. Sync again from SketchUp\n"
++                                       "afterwards to get the host values back.");
++                    if (ImGui::Button("Delete"))
++                    {
++                        if (baker != nullptr)
++                            baker->IrisDeleteOverrides();
++                        // **지문을 잊게 합니다.** 씬 바이트는 한 글자도 안
++                        // 바뀌므로, 이것 없이는 다시 보내도 "같은 씬"으로
++                        // 걸러져 호스트 값이 안 돌아옵니다 — 위 안내 문구가
++                        // 거짓이 됩니다.
++                        iris::bridge::IrisBridge::Get().ForgetLastScene();
++                        s_pollCountdown = 0;   // 바로 다시 셉니다
++                        ImGui::CloseCurrentPopup();
++                    }
++                    ImGui::SameLine();
++                    if (ImGui::Button("Cancel"))
++                        ImGui::CloseCurrentPopup();
++                    ImGui::EndPopup();
++                }
++            }
++
+             if (apply)
+                 m_app.ApplyIrisSettings();
+             if (save)

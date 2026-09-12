@@ -1,0 +1,251 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 12:05:27 +0900
+Subject: [PATCH 29/34] =?UTF-8?q?feat(iris):=20=ED=85=8D=EC=8A=A4=EC=B2=98?=
+ =?UTF-8?q?=20=EC=95=8C=ED=8C=8C=20=EC=BB=B7=EC=95=84=EC=9B=83=20=EC=84=A4?=
+ =?UTF-8?q?=EC=A0=95=20+=20=EC=95=8C=ED=8C=8C=20=ED=85=8C=EC=8A=A4?=
+ =?UTF-8?q?=ED=8A=B8=20=EA=B2=BD=EB=A1=9C=20=EC=A7=84=EB=8B=A8=C2=B7?=
+ =?UTF-8?q?=EB=B0=A9=EC=96=B4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+IRIS 11번 (a). 호스트 쪽(E:/IRIS)에서 텍스처의 알파 채널을 재서 보내고,
+SceneBuilder 가 MaterialDomain::AlphaTested 로 넘깁니다. 그런데 그런
+재질이 씬에 하나라도 있으면 렌더러가 씬 적용 직후 세그폴트합니다.
+
+통제 시험으로 갈랐습니다 — 같은 빌드·같은 모델에서 면 하나에 컷아웃
+재질을 칠했다 되돌리는 것만 바꿨고, 칠하면 죽고(재질 79개) 되돌리면
+65.7 FPS 로 돕니다(78개).
+
+원인을 못 찾아 IRIS 설정으로 빼고 **기본을 껐습니다**:
+  IRIS > Textures > Texture alpha cutout (UNSTABLE)
+
+진단으로 확인한 것 (전부 로그로 측정, 아무것도 안 걸림):
+  - UpdateSubInstanceData 의 알파 분기는 전부 정상 — 텍스처켬=1 ·
+    LoadedTexture/GPU 텍스처 유효 · 바인들리스 디스크립터 583 ·
+    TexCoord1 속성 있음 · GeometryData 있음 · 퍼뮤테이션 있음
+  - OMM 준비 경로도 정상 — CPU 이미지·GPU 텍스처 둘 다 유효
+  - 셰이더 퍼뮤테이션 첨자 범위 초과 아님, ShaderLibrary 널 아님
+  - D3D12 디버그 + NVRHI 검증 계층을 켜도 메시지 없이 죽습니다
+
+남겨 둔 방어 코드는 진단이 아니라 실제 개선입니다. OmmBaker 는 Donut 쪽
+베이스 텍스처나 엔진 TextureCache 의 CPU 이미지가 없으면 널을 그대로
+쓰고 있었고(IRIS 는 자체 텍스처 캐시에서 주므로 실제로 비어 있을 수
+있습니다), PTPipelineBaker 는 퍼뮤테이션 첨자와 ShaderLibrary 를 검사
+없이 참조하고 있었습니다.
+
+주의: OMM UI 의 Enable 체크박스는 BLAS 사용만 끄고 CreateOpacityMicromaps
+는 그대로 돕니다 — 그것으로 "OMM 아님"을 결론 내면 안 됩니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp               |  3 +++
+ Rtxpt/Iris/IrisSettings.h              | 18 +++++++++++++++++
+ Rtxpt/Materials/MaterialsBaker.cpp     | 25 ++++++++++++++++++++++++
+ Rtxpt/OpacityMicroMap/OmmBaker.cpp     | 27 ++++++++++++++++++++++++++
+ Rtxpt/SampleCommon/PTPipelineBaker.cpp | 19 +++++++++++++++++-
+ Rtxpt/SampleUI.cpp                     | 14 +++++++++++++
+ 6 files changed, 105 insertions(+), 1 deletion(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 4f17d06..326e5ee 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -355,6 +355,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     // 많습니다 — 세종 모델은 반투명 12개 중 0개에만 Enscape 설정이 있었습니다.
+     // 그때 쓰는 값이라 숨기지 않고 설정으로 둡니다 (09번 8-i).
+     builder.SetGlassRoughness(iris::Settings::Get().glassRoughness);
++    builder.SetAlphaCutout(iris::Settings::Get().alphaCutout);
+ 
+     // **태양이 있으면 하늘이 태양을 소유합니다.**
+     //
+@@ -431,6 +432,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     log::info("IRIS: 유리로 해석한 머티리얼 %zu개 (그중 저작자 지정 %zu) · 안 보임 %zu · Enscape 불투명도 적용 %zu",
+               stats.glassMaterials, stats.authorGlass,
+               stats.invisibleMaterials, stats.authorOpacity);
++    log::info("IRIS: 텍스처 %zu개 · 그중 알파 컷아웃 %zu개 (프로브가 못 잰 것 %zu)",
++              stats.textures, stats.cutoutMaterials, stats.cutoutUnmeasured);
+     log::info("IRIS: 조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu · Specular 지정 %zu",
+               stats.pointLights, stats.spotLights, stats.lightLumens,
+               stats.emissiveMaterials, stats.specularOverrides);
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+index 1a63fbb..c804747 100644
+--- a/Rtxpt/Iris/IrisSettings.h
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -66,6 +66,22 @@ namespace iris
+         // 적용됩니다.
+         float glassRoughness = 0.05f;
+ 
++        // ------------------------------------------------------ 텍스처 컷아웃
++        //
++        // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 **텍스처의 알파
++        // 채널**에 있습니다(11번 (a)). 켜면 그런 재질을 알파 테스트로
++        // 그려 구멍이 살아납니다.
++        //
++        // ⚠ **기본값이 꺼짐인 이유** — 켜면 렌더러가 죽습니다.
++        //   호스트 쪽(프로브 측정 · 프로토콜 · SceneBuilder)은 시험까지
++        //   끝냈고, `MaterialDomain::AlphaTested` 를 하나라도 만들면
++        //   RTXPT 가 씬 적용 직후 세그폴트합니다. 통제 시험으로 갈랐고
++        //   (같은 빌드에서 칠한 면 하나만 되돌리면 멀쩡합니다) 원인은
++        //   아직 못 찾았습니다. 11번 문서에 아는 것을 적어 뒀습니다.
++        //
++        // **씬을 다시 받아야** 적용됩니다.
++        bool alphaCutout = false;
++
+         // 엔진이 실제로 쓰는 값. 뒤집힌 의미를 한곳에서만 다룹니다.
+         [[nodiscard]] float CloudDensityOffset() const
+         {
+@@ -117,6 +133,7 @@ namespace iris
+             areaLightGeometry    = flag("area_light_geometry", areaLightGeometry);
+             iesProfiles          = flag("ies_profiles", iesProfiles);
+             glassRoughness       = num("glass_roughness", glassRoughness);
++            alphaCutout          = flag("alpha_cutout", alphaCutout);
+         }
+ 
+         void Save() const
+@@ -134,6 +151,7 @@ namespace iris
+             root["area_light_geometry"]   = areaLightGeometry;
+             root["ies_profiles"]          = iesProfiles;
+             root["glass_roughness"]       = glassRoughness;
++            root["alpha_cutout"]          = alphaCutout;
+ 
+             std::ofstream f(p, std::ios::trunc);
+             if (!f.good())
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index 879c9bf..f587933 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -28,6 +28,7 @@
+ #include <json/json.h>
+ 
+ #include <fstream>
++#include <set>   // IRIS 진단용
+ 
+ #include <unordered_set>
+ 
+@@ -992,6 +993,30 @@ void UpdateSubInstanceData(SubInstanceData & ret, const std::shared_ptr<Extended
+     float alphaCutoff = 0.0;
+ 
+     const std::shared_ptr<MeshInfo>& mesh = meshInstance.GetMesh();
++
++    // IRIS 진단: 알파 테스트 재질이 들어오면 렌더러가 죽습니다. 이 분기에서만
++    // 죽으므로 무엇이 비어 있는지 찍습니다. 재질 이름별로 한 번만 —
++    // 서브인스턴스마다 찍으면 수천 줄이 됩니다.
++    if (material.HasAlphaTest())
++    {
++        static std::set<std::string> s_irisSeen;
++        if (s_irisSeen.insert(material.Name).second)
++        {
++            donut::log::info("IRIS 알파진단 '%s': 텍스처켬=%d 로드=%p GPU텍스처=%p "
++                             "디스크립터=%u UV속성=%d 지오데이터=%d 퍼뮤테이션=%p cutoff=%.3f 최종알파테스트=%d",
++                material.Name.c_str(),
++                (int)material.EnableBaseTexture,
++                (void*)material.BaseTexture.Loaded.get(),
++                (void*)(material.BaseTexture.Loaded ? material.BaseTexture.Loaded->texture.Get() : nullptr),
++                material.BaseTexture.Loaded ? material.BaseTexture.Loaded->bindlessDescriptor.Get() : 0xFFFFFFFFu,
++                (int)(mesh && mesh->buffers ? (int)mesh->buffers->hasAttribute(VertexAttribute::TexCoord1) : -1),
++                (int)(scene->GetGeometryData(geometry) != nullptr),
++                (void*)material.BakedShaderPermutation.get(),
++                material.AlphaCutoff,
++                (int)alphaTest);
++        }
++    }
++
+     ret.FlagsAndAlphaInfo = 0;
+     if (alphaTest)
+     {
+diff --git a/Rtxpt/OpacityMicroMap/OmmBaker.cpp b/Rtxpt/OpacityMicroMap/OmmBaker.cpp
+index fb05400..30bacb3 100644
+--- a/Rtxpt/OpacityMicroMap/OmmBaker.cpp
++++ b/Rtxpt/OpacityMicroMap/OmmBaker.cpp
+@@ -123,7 +123,34 @@ void OmmBaker::CreateOpacityMicromaps(const donut::engine::Scene& scene)
+             if (!material->EnableAlphaTesting)
+                 continue;
+ 
++            // IRIS 진단 + 방어.
++            //
++            // 여기는 **알파 테스트 지오메트리에서만** 도는 길입니다. 라이브
++            // 링크로 알파 컷아웃 재질이 들어오면 렌더러가 이 근처에서 죽습니다.
++            //
++            // 두 가지가 비어 있을 수 있습니다:
++            //   - Donut 쪽 baseOrDiffuseTexture: PTMaterial 이 .material.json
++            //     에서 왔으면 PT 쪽에만 텍스처가 있고 Donut 쪽은 비어 있습니다.
++            //     그대로 ->path 를 하면 널 참조입니다.
++            //   - 엔진 TextureCache 의 CPU 이미지: IRIS 는 자체 텍스처 캐시에서
++            //     주므로(IrisScene.cpp) 엔진 캐시에 없을 수 있습니다.
++            if (geometry.material->baseOrDiffuseTexture == nullptr)
++            {
++                donut::log::warning("IRIS: OMM 건너뜀 — '%s' 에 Donut 베이스 텍스처가 없습니다",
++                                    material->Name.c_str());
++                continue;
++            }
+             std::shared_ptr<TextureData> alphaTexture = m_textureCache->GetLoadedTexture(geometry.material->baseOrDiffuseTexture->path);
++            if (alphaTexture == nullptr)
++            {
++                donut::log::warning("IRIS: OMM 건너뜀 — '%s' 의 CPU 이미지가 엔진 캐시에 없습니다 (%s)",
++                                    material->Name.c_str(),
++                                    geometry.material->baseOrDiffuseTexture->path.c_str());
++                continue;
++            }
++            donut::log::info("IRIS: OMM 대상 '%s' — CPU이미지=%p GPU텍스처=%p",
++                             material->Name.c_str(), (void*)alphaTexture.get(),
++                             (void*)material->BaseTexture.Loaded->texture.Get());
+ 
+             OmmBuildQueue::BuildInput::Geometry geom;
+             geom.geometryIndexInMesh = i;
+diff --git a/Rtxpt/SampleCommon/PTPipelineBaker.cpp b/Rtxpt/SampleCommon/PTPipelineBaker.cpp
+index a398e9d..1260fc8 100644
+--- a/Rtxpt/SampleCommon/PTPipelineBaker.cpp
++++ b/Rtxpt/SampleCommon/PTPipelineBaker.cpp
+@@ -355,7 +355,24 @@ void PTPipelineVariant::UpdateFinalize()
+ #if PIPELINE_BAKER_REVERT_TO_UBERSHADER
+             const ShaderPermutation & permutation = m_ubershaderMaterial;
+ #else
+-            const ShaderPermutation & permutation = m_specializedPerMaterial[hitGroupInfo.GetShaderPermutationIndex()];
++            // IRIS 진단: 알파 테스트 재질이 들어오면 여기서 죽습니다.
++            // 첨자가 표를 넘는지, 셰이더 라이브러리가 비었는지 둘 다 봅니다 —
++            // 둘 중 어느 쪽이든 바로 아래 getShader 에서 널 참조입니다.
++            const int irisIdx = hitGroupInfo.GetShaderPermutationIndex();
++            if (irisIdx < 0 || irisIdx >= (int)m_specializedPerMaterial.size())
++            {
++                donut::log::error("IRIS: 퍼뮤테이션 첨자 %d 가 표 %zu 개를 넘습니다 ('%s', anyHit=%d) — 히트그룹을 건너뜁니다",
++                    irisIdx, m_specializedPerMaterial.size(), shaderPermutationName.c_str(), (int)hitGroupInfo.HasAnyHitShader);
++                continue;
++            }
++            const ShaderPermutation & permutation = m_specializedPerMaterial[irisIdx];
++            if (permutation.ShaderLibrary == nullptr)
++            {
++                donut::log::error("IRIS: 셰이더 라이브러리가 비었습니다 — 퍼뮤테이션 %d '%s' anyHit=%d 컴파일오류='%s'",
++                    irisIdx, shaderPermutationName.c_str(), (int)hitGroupInfo.HasAnyHitShader,
++                    permutation.US_compileError.c_str());
++                continue;
++            }
+ #endif
+             pipelineDesc.hitGroups.push_back(
+                 {
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index c3e35e4..ff6f539 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -485,6 +485,20 @@ void SampleUI::buildUI(void)
+                                   "0.05 = polished float glass, 0.4+ = frosted / screen.\n\n"
+                                   "Applies on the next sync from SketchUp.");
+ 
++            ImGui::SeparatorText("Textures");
++            // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 텍스처의 알파
++            // 채널에 있습니다. 켜면 렌더러가 죽습니다 — 경위는
++            // IrisSettings.h 의 alphaCutout 주석과 11번 (a).
++            if (ImGui::Checkbox("Texture alpha cutout (UNSTABLE)", &s.alphaCutout))
++                save = true;
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Cut holes using the texture's alpha channel\n"
++                                  "(leaves, railings, perforated panels).\n\n"
++                                  "WARNING: this currently crashes the renderer.\n"
++                                  "The host side is measured and tested; the fault\n"
++                                  "is on the engine side and is not found yet.\n\n"
++                                  "Applies on the next sync from SketchUp.");
++
+             ImGui::SeparatorText("Light conversion");
+             // 둘 다 씬 그래프를 만들 때 정해집니다 — 지금 화면은 안 바뀝니다.
+             if (ImGui::Checkbox("Area lights as emissive geometry", &s.areaLightGeometry))

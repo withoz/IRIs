@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Fri, 11 Sep 2026 13:01:04 +0900
+Subject: [PATCH 21/34] =?UTF-8?q?feat(iris):=20=EB=A9=B4=EA=B4=91=EC=9B=90?=
+ =?UTF-8?q?=EC=9D=84=20=EB=B0=9C=EA=B4=91=20=EC=A7=80=EC=98=A4=EB=A9=94?=
+ =?UTF-8?q?=ED=8A=B8=EB=A6=AC=EB=A1=9C=20=E2=80=94=20=EA=B8=B0=EB=B3=B8?=
+ =?UTF-8?q?=EC=9C=BC=EB=A1=9C=20=EC=BC=AD=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+사각·선형 광원을 88도 원뿔 + 등가 면적 구면으로 내고 있었습니다. 그 근사는
+생각보다 정확합니다 — LightsBaker 가 반지름 0 이 아닌 스포트를 kSphere 로
+바꾸며 radiance = intensity / (pi r^2) 로 계산하므로, r = sqrt(A/pi) 를
+주면 투영 면적과 라디언스가 정확히 맞고 부드러운 그림자도 나옵니다.
+
+틀리는 것은 모양(반사에 원형), 길쭉함(0.02x2 m 가 반지름 0.11 m 공),
+코사인 감쇠 셋이었습니다.
+
+발광 삼각형은 RTXPT 에서 한쪽만 빛납니다 —
+  if (cosTheta <= 0.f) return result;   (PolymorphicLight.hlsli)
+패널과 정확히 맞습니다. Enscape 프록시 정면이 로컬 +Z 이므로 법선을 +Z 로
+두면 그대로이고, 스포트와 달리 X축 180도 뒤집기가 필요 없습니다.
+
+**찍어서 정했습니다.** 포르쉐 성수 1F 실내 · 3840x2036 · 같은 카메라:
+
+  OFF  천장에 동그란 빛 웅덩이  · 31.1 FPS · 분석 광원 777 · 메시 1286
+  ON   천장에 사각 패널·긴 라인 · 31.5 FPS · 분석 광원 479 · 메시 1325
+
+성능은 같고 조명이 건축 조명처럼 보입니다. 걱정했던 둘 — 허공에 뜬 흰
+사각형, 기구 안에 갇혀 빛이 막히는 것 — 은 나타나지 않았습니다.
+
+끄려면 IRIS_AREA_LIGHTS=0. 정식 설정이 생기면 그쪽으로 옮깁니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp | 32 ++++++++++++++++++++++++++++++--
+ 1 file changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 78ad86f..9a3c1c6 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -223,6 +223,33 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     static auto s_meshCache = std::make_shared<iris::bridge::SceneBuilder::MeshCache>();
+     builder.SetMeshCache(s_meshCache);
+ 
++    // **면광원을 발광 지오메트리로 낼 것인가.**
++    //
++    // 기본은 근사(88도 원뿔 + 등가 면적 구면)입니다. 그 근사는 라디언스와
++    // 투영 면적이 정확하고 부드러운 그림자도 나옵니다 — 틀리는 것은 모양과
++    // 길쭉함과 코사인 감쇠입니다. 발광 지오메트리는 셋 다 맞지만 광원이
++    // 눈에 보이고, 기구 안에 들어 있으면 빛이 막힐 수도 있습니다.
++    //
++    // 찍어서 견줬습니다 (포르쉐 성수 1F 실내 · 3840x2036 · 같은 카메라):
++    //
++    //   OFF  천장에 동그란 빛 웅덩이  · 31.1 FPS · 분석 광원 777
++    //   ON   천장에 사각 패널·긴 라인 · 31.5 FPS · 분석 광원 479
++    //
++    // 성능은 같고 조명은 건축 조명처럼 보입니다. **켜는 것이 기본입니다.**
++    // 끄려면 IRIS_AREA_LIGHTS=0. 정식 설정이 생기면 그쪽으로 옮깁니다.
++    {
++        char*  buf = nullptr;
++        size_t len = 0;
++        bool   on  = true;
++        if (_dupenv_s(&buf, &len, "IRIS_AREA_LIGHTS") == 0 && buf)
++        {
++            on = !(buf[0] == '0' || buf[0] == 'n' || buf[0] == 'N');
++            free(buf);
++        }
++        builder.SetAreaLightGeometry(on);
++        Trace(on ? "면광원 — 발광 지오메트리" : "면광원 — 구면 근사 (IRIS_AREA_LIGHTS=0)");
++    }
++
+     // **태양이 있으면 하늘이 태양을 소유합니다.**
+     //
+     // HDRI 환경맵에는 태양이 구워져 있습니다. 거기에 우리 방향광을 더하면
+@@ -267,8 +294,9 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     Trace("구축 OK %.1f ms — 메시 %zu · 지오메트리 %zu · 인스턴스 %zu · 카메라 %zu · 삼각형 %llu",
+           stats.buildMs, stats.meshes, stats.geometries, stats.instances, stats.cameras,
+           (unsigned long long)stats.triangles);
+-    Trace("조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu",
+-          stats.pointLights, stats.spotLights, stats.lightLumens, stats.emissiveMaterials);
++    Trace("조명 — 점 %zu · 스포트 %zu · 면광원 %zu · 총 광속 %.0f lm · 발광 재질 %zu",
++          stats.pointLights, stats.spotLights, stats.areaLights, stats.lightLumens,
++          stats.emissiveMaterials);
+     Trace("거울 배치 노드 %zu개", stats.mirroredNodes);
+     // 하늘에 태양 방향을 넘깁니다. 절차적 하늘이 이것을 씁니다.
+     iris::bridge::IrisBridge::Get().SetSunDirection(stats.sunDirYUp, stats.hasSun);

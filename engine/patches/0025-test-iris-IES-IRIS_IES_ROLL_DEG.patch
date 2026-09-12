@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Fri, 11 Sep 2026 16:04:03 +0900
+Subject: [PATCH 25/34] =?UTF-8?q?test(iris):=20IES=20=EB=A1=A4=EC=97=90=20?=
+ =?UTF-8?q?=EC=83=81=EC=88=98=20=EC=98=A4=ED=94=84=EC=85=8B=20=EC=8A=A4?=
+ =?UTF-8?q?=EC=9C=84=EC=B9=98=20=E2=80=94=20IRIS=5FIES=5FROLL=5FDEG?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+"프록시의 로컬 +X 가 IES 가로각 0도"는 가정입니다. 이 배광은 사분 대칭이라
+틀릴 수 있는 각도는 90도 하나뿐이고, 그러면 넓은 축(29.8도)과 좁은
+축(18.0도)이 통째로 뒤바뀝니다.
+
+두 변종을 각각 렌더해 Enscape 와 견주려고 넣었습니다.
+
+  IRIS_IES_ROLL_DEG=90 ./Rtxpt.exe
+
+기본은 0 이라 제품 동작은 그대로입니다.
+
+써 본 결과는 **가려지지 않음** 이었습니다 — 골프존 실내 뷰에서 0도와
+90도가 노출을 고정해도 구별되지 않습니다. 배광이 1.65:1 로 완만하고,
+광원 43개의 웅덩이가 겹치고, 빔이 닿는 바닥이 짙은 인조잔디라 무늬가
+안 읽힙니다. 장면이 가리지 못하는 것이지 배관 문제가 아닙니다
+(두 실행 다 `IES 배광 — 1종을 광원 43개가 씁니다`).
+
+스위치는 남겨 둡니다. 통제된 시험(빈 파일 + 조명 하나 + 흰 바닥)을 할 때
+그대로 쓸 수 있습니다.
+
+경위는 IRIS 저장소 docs/09-조명-설계.md 8-g.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Lighting/LightsBaker.cpp | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/Rtxpt/Lighting/LightsBaker.cpp b/Rtxpt/Lighting/LightsBaker.cpp
+index 0efabec..9502dad 100644
+--- a/Rtxpt/Lighting/LightsBaker.cpp
++++ b/Rtxpt/Lighting/LightsBaker.cpp
+@@ -536,6 +536,28 @@ static PolymorphicLightInfoFull ConvertLight( Light & light )
+                     float roll = 0.0f;
+                     if (dm::length(t) > 1e-6f)
+                         roll = std::atan2(dot(t, yAxis), dot(t, xAxis));
++
++                    // **검증용 상수 오프셋.** IRIS_IES_ROLL_DEG=90 처럼 씁니다.
++                    //
++                    // "로컬 +X 가 IES 가로각 0도"는 우리 가정입니다. 이 배광은
++                    // 사분 대칭이라 틀릴 수 있는 각도는 90도 하나뿐이고, 그러면
++                    // 넓은 축(29.8도)과 좁은 축(18.0도)이 통째로 뒤바뀝니다.
++                    //
++                    // 두 변종을 각각 렌더해 Enscape 와 견주면 어느 쪽이 맞는지
++                    // 그림으로 정해집니다. 기본은 0 이라 제품 동작은 그대로입니다.
++                    static const float s_rollOffset = []() -> float {
++                        char*  buf = nullptr;
++                        size_t len = 0;
++                        float  v   = 0.0f;
++                        if (_dupenv_s(&buf, &len, "IRIS_IES_ROLL_DEG") == 0 && buf)
++                        {
++                            v = (float)atof(buf) * dm::PI_f / 180.0f;
++                            free(buf);
++                        }
++                        return v;
++                    }();
++                    roll += s_rollOffset;
++
+                     polymorphic.Scalars |= (uint32_t)fp32ToFp16(roll) << 16;
+                 }
+                 packLightColor(radiance, polymorphic);

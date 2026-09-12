@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Thu, 10 Sep 2026 19:33:19 +0900
+Subject: [PATCH 20/34] =?UTF-8?q?feat(iris):=20=ED=95=98=EB=8A=98=EC=9D=84?=
+ =?UTF-8?q?=20=EB=A7=91=EA=B2=8C=20=EC=8B=9C=EC=9E=91=ED=95=A9=EB=8B=88?=
+ =?UTF-8?q?=EB=8B=A4=20=E2=80=94=20=EC=97=94=EC=A7=84=20=EA=B8=B0=EB=B3=B8?=
+ =?UTF-8?q?=20=EA=B5=AC=EB=A6=84=EC=9D=B4=20=ED=83=9C=EC=96=91=EC=9D=84=20?=
+ =?UTF-8?q?=ED=9D=A9=EB=9C=A8=EB=A0=B8=EC=8A=B5=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+실외 모델에서 그림자가 안 보였습니다. 태양 방향은 맞고(고도 +27.2도,
+방위 278.8도) 자동 노출도 켜져 있고 화면도 타지 않는데 바닥 그림자가
+없었습니다.
+
+원인은 절차적 하늘의 구름 기본값 0.75 였습니다.
+
+**이름과 반대로 동작합니다.**
+
+  Density = max(0, Density - cloud_density_offset) / (1.001 - offset)
+
+빼는 문턱값이지 양이 아닙니다.
+
+  0.0   노이즈가 그대로 통과 — 하늘 전체에 **옅은 안개**
+  0.75  짙은 부분만 남음 — 뚜렷한 구름 (엔진 기본)
+  1.0   전부 빠짐 — **완전히 맑음**
+
+이름만 보고 "0 으로 내리면 구름이 없어진다"고 읽었다가 틀렸습니다. 0 은
+태양을 고르게 흩뜨려서, 뚜렷한 구름은 없는데 그림자도 없는 가장 헷갈리는
+상태를 만듭니다.
+
+건축 프레젠테이션은 대개 맑은 날을 씁니다. 그리고 SketchUp 그림자 패널에는
+날짜·시각·위치만 있고 **날씨가 없습니다** — 호스트가 정할 수 없는 값이므로
+IRIS 가 정합니다. 나중에 자체 설정으로 뺍니다.
+
+태양 경로는 단계마다 확인했습니다: 호스트 -> 브리지(`태양 O`) -> 하늘
+(`호스트 로컬 ... 고도 27.2도`) -> 환경맵(태양 원반이 화면에 보임) ->
+그림자(바닥에 생김).
+
+Sun Brightness 는 답이 아니었습니다 — FinalRadianceMultiplier 와
+StarIrradiance 를 **같이** 곱하므로 하늘과 태양의 비가 안 바뀝니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Lighting/Distant/SampleProceduralSky.h |  7 +++++++
+ Rtxpt/Sample.cpp                             | 15 +++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/Rtxpt/Lighting/Distant/SampleProceduralSky.h b/Rtxpt/Lighting/Distant/SampleProceduralSky.h
+index 1fe8cee..f636f58 100644
+--- a/Rtxpt/Lighting/Distant/SampleProceduralSky.h
++++ b/Rtxpt/Lighting/Distant/SampleProceduralSky.h
+@@ -57,6 +57,13 @@ public:
+ 
+     void                            DebugGUI(float indent);
+ 
++    // IRIS: 구름 문턱값. **이름과 반대로 동작합니다** — 빼는 값이라
++    // 높을수록 구름이 적고, 1.0 이면 완전히 맑습니다(셰이더:
++    // `Density = max(0, Density - offset) / (1.001 - offset)`).
++    // 0.0 은 구름을 없애는 것이 아니라 하늘 전체를 옅은 안개로 덮습니다.
++    void                            SetCloudDensityOffset(float v)  { m_cloudDensityOffset = dm::clamp(v, 0.0f, 1.0f); }
++    float                           GetCloudDensityOffset() const   { return m_cloudDensityOffset; }
++
+ private:
+     double                          m_lastSceneTime = 0.0;
+ 
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 9374557..1e81b50 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -601,6 +601,21 @@ void Sample::SceneLoaded( )
+     {
+         m_ui.ToneMappingParams.autoExposure = true;
+         m_ui.ToneMappingParams.exposureCompensation = 0.0f;
++
++        // 하늘은 **맑게** 시작합니다.
++        //
++        // 엔진 기본값 0.75 는 짙은 구름을 만들고, 그러면 태양이 흩어져
++        // 그림자가 사라집니다 — 실외 모델에서 "그림자가 왜 없나"로 한참
++        // 헤맸습니다. 건축 프레젠테이션은 대개 맑은 날을 씁니다.
++        //
++        // ⚠ 이 값은 **빼는 문턱값**이라 이름과 반대입니다. 1.0 이 맑음이고
++        //   0.0 은 구름 없음이 아니라 하늘 전체에 옅은 안개입니다.
++        //
++        // SketchUp 그림자 패널에는 날짜·시각·위치만 있고 날씨가 없습니다.
++        // 그래서 이건 호스트가 아니라 IRIS 가 정할 자리입니다 — 나중에
++        // 자체 설정으로 뺍니다.
++        if (m_envMapBaker != nullptr && m_envMapBaker->GetProceduralSky() != nullptr)
++            m_envMapBaker->GetProceduralSky()->SetCloudDensityOffset(1.0f);
+     }
+ 
+     std::shared_ptr<EnvironmentLight> envLight = FindEnvironmentLight(m_lights);

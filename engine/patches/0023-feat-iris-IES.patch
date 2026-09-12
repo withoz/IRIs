@@ -1,0 +1,138 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Fri, 11 Sep 2026 14:35:30 +0900
+Subject: [PATCH 23/34] =?UTF-8?q?feat(iris):=20=EA=B8=B0=EA=B5=AC=EC=9D=98?=
+ =?UTF-8?q?=20=ED=9A=8C=EC=A0=84=EC=9D=84=20=EB=B3=B4=EB=82=B4=20IES=20?=
+ =?UTF-8?q?=EB=B0=B0=EA=B4=91=EC=9D=98=20=EB=B0=A9=ED=96=A5=EC=9D=84=20?=
+ =?UTF-8?q?=EB=A7=9E=EC=B6=A5=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+셰이더는 가로각의 기준을 BranchlessONB(축) 으로 만듭니다. 축 하나로 만든
+기저라 기구가 자기 축을 중심으로 얼마나 돌아가 있는지를 모릅니다 —
+비대칭 배광(Bega 8331 WIDE 는 0.809)이 **임의 각도로 돌아간 채** 그려집니다.
+그럴듯하고 눈으로는 못 잡습니다.
+
+**구조를 늘리지 않고 자리를 찾았습니다.** 구면 광원은 Base.Scalars 의
+하위 16비트(radius)만 씁니다 — 상위는 비어 있습니다. 거기에 롤 각을
+fp16 으로 싣습니다.
+
+  CPU   노드 변환의 row0(로컬 +X)가 IES 가로각 0도 평면입니다. 그것이
+        ONB 기저에서 몇 도에 있는지를 atan2 로 구해 보냅니다.
+  셰이더 tangentAngle 에서 빼고 frac 으로 감쌉니다.
+
+⚠ ONB 식을 **CPU 와 셰이더에 똑같이** 써야 합니다. 한쪽만 고치면 롤이
+어긋난 채 그럴듯하게 나옵니다. 양쪽 주석이 서로를 가리킵니다.
+
+전제: Enscape 프록시의 로컬 +X 가 IES 가로각 0도입니다. 90도 어긋나
+있다면 모든 비대칭 배광이 같이 90도 돌아가므로 **상수 하나로 교정**
+됩니다 — 인스턴스마다 제각각이던 것과는 다른 상태입니다.
+
+실측 (골프존 · 3840x2036): Bega.8331WIDE.IES@128x64 (128 x 64) 를
+광원 43개가 씁니다. 이상 징후 없음.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Lighting/LightsBaker.cpp                | 33 +++++++++++++++++++
+ .../PathTracer/Lighting/LightShaping.hlsli    | 15 ++++++---
+ 2 files changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/Rtxpt/Lighting/LightsBaker.cpp b/Rtxpt/Lighting/LightsBaker.cpp
+index 4901fca..0efabec 100644
+--- a/Rtxpt/Lighting/LightsBaker.cpp
++++ b/Rtxpt/Lighting/LightsBaker.cpp
+@@ -504,6 +504,39 @@ static PolymorphicLightInfoFull ConvertLight( Light & light )
+                 {
+                     polymorphicEx.IesProfileIndex = (uint32_t)spot.profileTextureIndex;
+                     polymorphic.ColorTypeAndFlags |= kPolymorphicLightIesProfileEnableBit;
++
++                    // **기구의 회전(롤)을 같이 보냅니다.**
++                    //
++                    // 셰이더는 가로각의 기준을 BranchlessONB(축) 로 만듭니다.
++                    // 축 하나로 만든 기저라 기구가 자기 축을 중심으로 얼마나
++                    // 돌아가 있는지를 모릅니다 — 비대칭 배광(월워셔)이 임의
++                    // 각도로 돌아간 채 그려집니다. 그럴듯하고 눈으로는 못
++                    // 잡습니다.
++                    //
++                    // 노드 변환의 row0 가 기구의 로컬 +X 이고, 그것이 IES 의
++                    // 가로각 0도 평면입니다. 그 방향이 ONB 기저에서 몇 도에
++                    // 있는지를 실어 보내면 셰이더가 빼서 맞춥니다.
++                    //
++                    // 자리는 Base.Scalars 의 **상위 16비트**입니다 — 구면
++                    // 광원은 하위 16비트(radius)만 씁니다. 구조를 안 늘립니다.
++                    const float3 axis = normalize(float3(spot.GetDirection()));
++                    float3 tangent = float3(1.0f, 0.0f, 0.0f);
++                    if (auto node = spot.GetNode())
++                        tangent = float3(node->GetLocalToWorldTransform().m_linear.row0);
++
++                    // 셰이더와 **같은 식**이어야 합니다(LightShaping.hlsli).
++                    const float onbSign = (axis.z >= 0.0f) ? 1.0f : -1.0f;
++                    const float onbA    = -1.0f / (onbSign + axis.z);
++                    const float onbB    = axis.x * axis.y * onbA;
++                    const float3 xAxis(1.0f + onbSign * axis.x * axis.x * onbA,
++                                       onbSign * onbB, -onbSign * axis.x);
++                    const float3 yAxis(onbB, onbSign + axis.y * axis.y * onbA, -axis.y);
++
++                    const float3 t = tangent - axis * dot(tangent, axis);
++                    float roll = 0.0f;
++                    if (dm::length(t) > 1e-6f)
++                        roll = std::atan2(dot(t, yAxis), dot(t, xAxis));
++                    polymorphic.Scalars |= (uint32_t)fp32ToFp16(roll) << 16;
+                 }
+                 packLightColor(radiance, polymorphic);
+             }
+diff --git a/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli b/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli
+index 486f3a9..ce3873a 100644
+--- a/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli
++++ b/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli
+@@ -21,6 +21,8 @@ struct LightShaping
+     uint isSpot;
+     int iesProfileIndex;
+     float minFalloff;
++    // IRIS: 기구의 회전. ONB 기저에서 IES 가로각 0도가 놓인 방향입니다.
++    float iesRoll;
+ };
+ 
+ LightShaping unpackLightShaping(const PolymorphicLightInfoFull lightInfoFull)
+@@ -37,6 +39,9 @@ LightShaping unpackLightShaping(const PolymorphicLightInfoFull lightInfoFull)
+         // IRIS: 배광이 붙어 있으면 그 색인을, 아니면 -1 (원뿔만).
+         shaping.iesProfileIndex = (lightInfoFull.Base.ColorTypeAndFlags & kPolymorphicLightIesProfileEnableBit)
+                                       ? (int)lightInfoFull.Extended.IesProfileIndex : -1;
++        // 구면 광원은 Scalars 하위 16비트(radius)만 씁니다. 상위는 롤입니다.
++        // 배광이 없으면 0 이고, f16tof32(0) = 0 이라 그대로 안전합니다.
++        shaping.iesRoll = f16tof32(lightInfoFull.Base.Scalars >> 16);
+         shaping.minFalloff = (lightInfoFull.Base.ColorTypeAndFlags & kPolymorphicLightShapingUseMinFalloff) ? kMinSpotlightFalloff : 0.0f;
+     }
+     
+@@ -64,7 +69,7 @@ float IrisSampleIesProfile(int profileIndex, float2 uv);
+ float IrisSampleIesProfile(int profileIndex, float2 uv) { return 1.0; }
+ #endif
+ 
+-float evaluateIesProfile(int profileIndex, float3 emissionDirection_, float3 lightPrimaryAxis)
++float evaluateIesProfile(int profileIndex, float3 emissionDirection_, float3 lightPrimaryAxis, float iesRoll)
+ {
+     // IRIS: 켰습니다. 호스트가 IES 배광을 격자로 보내고(iris_enscape.rb)
+     // IrisScene 이 텍스처로 굽습니다. 폭 = 세로각, 높이 = 가로각.
+@@ -93,8 +98,10 @@ float evaluateIesProfile(int profileIndex, float3 emissionDirection_, float3 lig
+     const float angle = acos(emissionDirection.z);
+     const float normAngle = angle / K_PI;
+ 
+-    const float tangentAngle = atan2(emissionDirection.y, emissionDirection.x);
+-    const float normTangentAngle = tangentAngle * .5f / K_PI + .5f;
++    // IRIS: 기구의 회전을 빼서 IES 가로각 0도에 맞춥니다. 안 빼면 비대칭
++    // 배광이 임의 각도로 돌아갑니다(ONB 기저는 축 하나로만 만들어집니다).
++    const float tangentAngle = atan2(emissionDirection.y, emissionDirection.x) - iesRoll;
++    const float normTangentAngle = frac(tangentAngle * .5f / K_PI + .5f);
+ 
+     return IrisSampleIesProfile(profileIndex, float2(normAngle, normTangentAngle));
+ }
+@@ -115,7 +122,7 @@ float3 evaluateLightShaping(LightShaping shaping, float3 surfacePosition, float3
+         return 0.0;
+ 
+     const float iesMultiplier = evaluateIesProfile(shaping.iesProfileIndex,
+-        lightToSurface, shaping.primaryAxis);
++        lightToSurface, shaping.primaryAxis, shaping.iesRoll);
+ 
+     return softSpotlight * iesMultiplier;
+ }

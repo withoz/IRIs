@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Thu, 10 Sep 2026 17:46:11 +0900
+Subject: [PATCH 19/34] =?UTF-8?q?feat(iris):=20=EB=A0=8C=EB=8D=94=EB=9F=AC?=
+ =?UTF-8?q?=20=EC=B6=9C=EB=A0=A5=20=ED=95=B4=EC=83=81=EB=8F=84=EB=A5=BC=20?=
+ =?UTF-8?q?HelloAck=20=EC=97=90=20=EC=8B=A4=EC=96=B4=20=EB=B3=B4=EB=83=85?=
+ =?UTF-8?q?=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+카메라를 그대로 옮겨도 두 화면은 같아지지 않습니다. 우리는 세로 화각만
+맞추므로 창의 가로세로 비가 다르면 좌우로 더/덜 보입니다. 그림자 방향을
+눈으로 비교하다 헛돈 것이 이 때문입니다 — 카메라가 조금만 달라도 시계
+방향이 달라집니다(09번 8-b).
+
+호스트가 자기 뷰포트를 이 비율로 고정하면(SketchUp 은 Camera#aspect_ratio
+로 바깥을 회색으로 칠합니다) 구도가 정확히 같아집니다.
+
+HelloAck 에 display_w / display_h 를 더했습니다 — 호스트가 어차피 매번
+여는 자리입니다. 값은 m_displaySize(출력 해상도)이고 매 프레임 갱신합니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Sample.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index 029f518..9374557 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -826,6 +826,10 @@ void Sample::Animate(float fElapsedTimeSeconds)
+     //
+     // 씬은 건드리지 않는다 — 시점을 돌릴 때마다 36 MB 를 다시 받고 BLAS 를
+     // 다시 지을 수는 없다. 수백 바이트짜리 전용 메시지로 받아 여기서 반영한다.
++    // IRIS: 우리 출력 해상도를 호스트가 알아야 구도를 맞출 수 있습니다.
++    // 카메라만 옮기면 세로 화각만 같고 좌우로 더/덜 보입니다.
++    iris::bridge::IrisBridge::Get().SetDisplaySize(uint32_t(m_displaySize.x), uint32_t(m_displaySize.y));
++
+     if (iris::bridge::IrisBridge::Get().HasPendingCamera())
+     {
+         const auto c = iris::bridge::IrisBridge::Get().TakePendingCamera();

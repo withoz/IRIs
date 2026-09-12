@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 13:20:44 +0900
+Subject: [PATCH 32/34] =?UTF-8?q?feat(iris):=20=EC=A0=80=EC=9E=A5=EB=90=9C?=
+ =?UTF-8?q?=20=EC=9E=AC=EC=A7=88=EC=9D=B4=20=ED=98=B8=EC=8A=A4=ED=8A=B8=20?=
+ =?UTF-8?q?=EA=B0=92=EC=9D=84=20=EB=8D=AE=EC=9C=BC=EB=A9=B4=20=EC=95=8C?=
+ =?UTF-8?q?=EB=A6=BD=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+IRIS 11번 11.6. `materialEx->PTMaterial = loaded;` 한 줄이 호스트가 보낸
+값을 통째로 버립니다 — 색·거칠기·투과·도메인·텍스처까지 전부 파일
+것으로 바뀝니다. 실측으로 확인했습니다(커튼월에 파일을 심었더니 호스트가
+회색 반투명 유리를 계속 보내는데도 불투명 빨강이 됐습니다).
+
+그 동작 자체는 엔진의 설계입니다. 문제는 조용하다는 것이었습니다 —
+몇 달 전 저장해 둔 파일 하나가 남아 있으면, 사용자가 SketchUp 에서 재질을
+고쳐도 화면이 안 바뀌고 이유를 알 방법이 없습니다. 라이브 링크에서는
+특히 그렇습니다.
+
+  [warn] IRIS: 저장된 재질 파일 N개가 호스트 값을 덮었습니다 — '<경로>'.
+         호스트 값으로 되돌리려면 그 파일을 지우십시오.
+
+모델별로 가르는 쪽(modelFileName)은 IRIS 커밋에 있습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Materials/MaterialsBaker.cpp | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index bbf68c9..7a368d7 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -884,6 +884,7 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+         std::unordered_set<std::string> materialsPTUniqueNames;
+ 
+         int initializedFromDonutCount = 0;
++        int loadedFromFileCount       = 0;   // IRIS: 저장 파일이 호스트 값을 덮은 수
+ 
+         std::shared_ptr<SceneGraph> sceneGraph = scene->GetSceneGraph();
+         auto& materials = sceneGraph->GetMaterials();
+@@ -923,6 +924,11 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+                 std::shared_ptr<PTMaterial> loaded = Load(material->modelFileName, material->name);
+                 if (loaded != nullptr)
+                 {
++                    // IRIS: 이 한 줄이 **호스트가 보낸 값을 통째로 버립니다** —
++                    // 색·거칠기·투과·도메인·텍스처까지 전부 파일 것으로 바뀝니다.
++                    // 라이브 링크에서는 사용자가 SketchUp 에서 아무리 고쳐도
++                    // 화면이 안 바뀌는 것으로 보입니다. 조용하면 안 됩니다.
++                    ++loadedFromFileCount;
+                     materialEx->PTMaterial = loaded;
+                 }
+                 else // ...and if we didn't find it in our .scene.materials.json, then import from Donut!
+@@ -958,6 +964,14 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+         if (initializedFromDonutCount > 0)
+             donut::log::warning("There were %d materials not found in RTXPT material materials folder '%s'; consider doing Scene->Materials->Advanced->Save", initializedFromDonutCount, m_materialsPath.string().c_str());
+ 
++        // IRIS: 덮어쓰기는 **조용하면 안 됩니다.** 예전에 저장해 둔 파일 하나가
++        // 남아 있으면, 사용자가 SketchUp 에서 재질을 고쳐도 화면이 안 바뀝니다.
++        // 이유를 화면 밖에서 알 방법이 없습니다.
++        if (loadedFromFileCount > 0)
++            donut::log::warning("IRIS: 저장된 재질 파일 %d개가 호스트 값을 덮었습니다 — '%s'. "
++                                "호스트 값으로 되돌리려면 그 파일을 지우십시오.",
++                                loadedFromFileCount, m_materialsPath.string().c_str());
++
+         m_deferredTextureLoadInProgress = true;
+     }
+ 

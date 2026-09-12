@@ -1,0 +1,434 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 12:30:53 +0900
+Subject: [PATCH 30/34] =?UTF-8?q?fix(omm):=20=EC=95=8C=ED=8C=8C=20?=
+ =?UTF-8?q?=ED=85=8C=EC=8A=A4=ED=8A=B8=EC=99=80=20=EB=B6=88=ED=88=AC?=
+ =?UTF-8?q?=EB=AA=85=EC=9D=B4=20=EC=84=9E=EC=9D=B8=20=EB=A9=94=EC=8B=9C?=
+ =?UTF-8?q?=EC=97=90=EC=84=9C=20=EC=A3=BD=EB=8D=98=20=EA=B2=83=20=E2=80=94?=
+ =?UTF-8?q?=20nvrhi=20=EB=84=90=20=EA=B2=80=EC=82=AC=20=EB=88=84=EB=9D=BD?=
+ =?UTF-8?q?=20=ED=9A=8C=ED=94=BC?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+알파 컷아웃을 켜자마자 렌더러가 씬 적용 직후 세그폴트했습니다. 이 머신에
+디버거가 없어 **프로세스가 스스로 스택을 남기게** 했고(IrisCrashReport.h),
+한 번에 나왔습니다:
+
+  접근 위반: 읽기 주소 0x0
+   #00 nvrhi::d3d12::fillAsInputDescForPreBuildInfo  (d3d12-raytracing.cpp:776)
+   #01 nvrhi::d3d12::Device::GetAccelStructPreBuildInfo
+   #02 nvrhi::d3d12::Device::createAccelStruct
+   #03 OmmBuildQueue::BuildBLASWithOMM               (OmmBuildQueue.cpp:389)
+   #06 OmmBaker::BuildOpacityMicromaps
+   #07 Sample::Render
+
+원인은 nvrhi 입니다. fillD3dGeometryOMMLinkageDesc(650줄)에 널 검사가
+없는데, 같은 파일 665줄의 NVAPI 경로는 검사합니다 — 한쪽만 빠졌습니다.
+호출부는 지오메트리 하나라도 OMM 이 있으면 전부에 대해 링키지를 채우므로,
+한 메시 안에 OMM 있는 것과 없는 것이 섞이면 없는 쪽에서 죽습니다.
+
+RTXPT 기본 씬에는 없는 조합입니다. SketchUp 정의는 재질 버킷이 여럿이라
+알파 테스트와 불투명이 한 메시에 섞이는 것이 보통입니다.
+
+고침: CreateOpacityMicromaps 에서 섞인 메시는 OMM 을 건너뜁니다. OMM 은
+가속 구조 최적화일 뿐이고 알파 테스트는 애니히트 셰이더로 도므로 화면은
+맞습니다. nvrhi 한 줄 패치는 IRIS 쪽에 남겼습니다
+(tools/rtxpt/patches/nvrhi-omm-linkage-null.patch) — nvrhi 는 중첩
+서브모듈이라 수정이 다른 체크아웃으로 안 따라갑니다.
+
+함께 넣은 것:
+  - IrisCrashReport.h — 크래시 스택과 Debug assert 를 파일로. 남깁니다.
+  - OmmBaker: Donut 베이스 텍스처와 엔진 CPU 이미지 널 검사(경고 후 건너뜀)
+  - PTPipelineBaker: 퍼뮤테이션 첨자 범위와 ShaderLibrary 널 검사
+  - IRIS 설정 alphaCutout 기본 켬, UI 문구에서 UNSTABLE 제거
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/AdvancedSample.cpp           |   5 +
+ Rtxpt/Iris/IrisCrashReport.h       | 184 +++++++++++++++++++++++++++++
+ Rtxpt/Iris/IrisSettings.h          |  11 +-
+ Rtxpt/Materials/MaterialsBaker.cpp |  24 ----
+ Rtxpt/OpacityMicroMap/OmmBaker.cpp |  46 ++++++--
+ Rtxpt/SampleUI.cpp                 |  10 +-
+ 6 files changed, 236 insertions(+), 44 deletions(-)
+ create mode 100644 Rtxpt/Iris/IrisCrashReport.h
+
+diff --git a/Rtxpt/AdvancedSample.cpp b/Rtxpt/AdvancedSample.cpp
+index 1d54144..79ca7f2 100644
+--- a/Rtxpt/AdvancedSample.cpp
++++ b/Rtxpt/AdvancedSample.cpp
+@@ -9,6 +9,7 @@
+ */
+ 
+ #include "Sample.h"
++#include "Iris/IrisCrashReport.h"   // IRIS: 크래시 스택 남기기
+ #include <SampleCommon/SampleBaseApp.h>
+ #include <SampleCommon/PTPipelineBaker.h>
+ 
+@@ -73,6 +74,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
+ int main(int __argc, const char** __argv)
+ #endif
+ {
++    // IRIS: 죽으면 스택을 파일에 남깁니다. 이 머신에 디버거가 없고,
++    // 알파 테스트 경로의 세그폴트를 로그로는 더 못 좁혔습니다(11번 (a)).
++    iris::InstallCrashReporter();
++
+     SplashScreen splashScreen;
+     splashScreen.Start(L"loading_splash.png");
+ 
+diff --git a/Rtxpt/Iris/IrisCrashReport.h b/Rtxpt/Iris/IrisCrashReport.h
+new file mode 100644
+index 0000000..9c65edf
+--- /dev/null
++++ b/Rtxpt/Iris/IrisCrashReport.h
+@@ -0,0 +1,184 @@
++// IRIS — 죽을 때 **어디서** 죽었는지 파일로 남깁니다
++//
++// 왜
++//   알파 테스트 재질이 하나라도 들어가면 렌더러가 세그폴트합니다(11번 (a)).
++//   로그를 심어 좁히는 방식으로는 한계에 닿았습니다 — 의심한 자리(서브
++//   인스턴스 준비·OMM·셰이더 퍼뮤테이션)가 전부 정상으로 나왔고, D3D12
++//   디버그 계층과 NVRHI 검증 계층조차 아무 메시지 없이 죽습니다.
++//
++//   이 머신에는 cdb·WinDbg 가 없습니다. 그래서 **프로세스가 스스로**
++//   자기 스택을 적게 합니다. Release PDB 가 있으므로 함수 이름과 줄
++//   번호까지 나옵니다.
++//
++//   Debug 빌드에서는 하나 더 필요합니다: assert 가 기본으로 **모달
++//   대화상자**를 띄웁니다. 화면 밖에서 돌리면 그대로 멈춰 버리므로
++//   CRT 보고를 가로채 같은 파일에 적고 끝냅니다.
++//
++// 헤더 하나로 끝냅니다 — RTXPT 의 CMake 가 소스를 GLOB 으로 모으므로
++// .cpp 를 늘리면 다시 구성해야 합니다. Dbghelp 도 pragma 로 링크합니다.
++//
++// 남기는 곳: IRIS_TRACE_LOG 가 있으면 그 옆의 `*.crash.txt`,
++//            없으면 실행 파일 옆 `iris_crash.txt`.
++
++#pragma once
++
++#ifdef _WIN32
++
++#include <windows.h>
++#include <DbgHelp.h>
++#include <crtdbg.h>
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++#pragma comment(lib, "Dbghelp.lib")
++
++namespace iris
++{
++    inline std::string CrashLogPath()
++    {
++        char*  buf = nullptr;
++        size_t len = 0;
++        std::string path;
++        if (_dupenv_s(&buf, &len, "IRIS_TRACE_LOG") == 0 && buf && buf[0])
++        {
++            path = buf;
++            free(buf);
++            const size_t dot = path.find_last_of('.');
++            path = (dot == std::string::npos) ? (path + ".crash.txt")
++                                              : (path.substr(0, dot) + ".crash.txt");
++            return path;
++        }
++        if (buf) free(buf);
++        return "iris_crash.txt";
++    }
++
++    // 크래시 처리 중에는 아무것도 가정하지 않습니다. 열고, 쓰고, 닫습니다.
++    inline void CrashWrite(const char* line)
++    {
++        static const std::string s_path = CrashLogPath();
++        FILE* f = nullptr;
++        if (fopen_s(&f, s_path.c_str(), "a") == 0 && f)
++        {
++            fputs(line, f);
++            fputc('\n', f);
++            fclose(f);
++        }
++        // 콘솔로도 흘립니다 — 리다이렉트해 두면 같이 잡힙니다.
++        fputs(line, stderr);
++        fputc('\n', stderr);
++    }
++
++    inline void CrashDumpStack(CONTEXT* ctx)
++    {
++        const HANDLE proc   = GetCurrentProcess();
++        const HANDLE thread = GetCurrentThread();
++
++        SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
++        SymInitialize(proc, nullptr, TRUE);
++
++        STACKFRAME64 frame{};
++        frame.AddrPC.Offset    = ctx->Rip; frame.AddrPC.Mode    = AddrModeFlat;
++        frame.AddrFrame.Offset = ctx->Rbp; frame.AddrFrame.Mode = AddrModeFlat;
++        frame.AddrStack.Offset = ctx->Rsp; frame.AddrStack.Mode = AddrModeFlat;
++
++        char out[2048];
++        for (int i = 0; i < 64; ++i)
++        {
++            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, thread, &frame, ctx, nullptr,
++                             SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
++                break;
++            if (frame.AddrPC.Offset == 0)
++                break;
++
++            alignas(SYMBOL_INFO) char symBuf[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
++            SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
++            sym->SizeOfStruct = sizeof(SYMBOL_INFO);
++            sym->MaxNameLen   = MAX_SYM_NAME;
++
++            DWORD64 disp = 0;
++            const char* name = SymFromAddr(proc, frame.AddrPC.Offset, &disp, sym) ? sym->Name : "(이름 없음)";
++
++            // 어느 모듈인지도 적습니다 — 드라이버에서 죽었는지 우리 코드에서
++            // 죽었는지가 갈립니다.
++            IMAGEHLP_MODULE64 mod{};
++            mod.SizeOfStruct = sizeof(mod);
++            const char* modName = SymGetModuleInfo64(proc, frame.AddrPC.Offset, &mod) ? mod.ModuleName : "?";
++
++            IMAGEHLP_LINE64 line{};
++            line.SizeOfStruct = sizeof(line);
++            DWORD lineDisp = 0;
++            if (SymGetLineFromAddr64(proc, frame.AddrPC.Offset, &lineDisp, &line))
++                sprintf_s(out, "  #%02d %s!%s  (%s:%lu)", i, modName, name, line.FileName, line.LineNumber);
++            else
++                sprintf_s(out, "  #%02d %s!%s  [0x%llx]", i, modName, name,
++                          (unsigned long long)frame.AddrPC.Offset);
++            CrashWrite(out);
++        }
++        SymCleanup(proc);
++    }
++
++    inline LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep)
++    {
++        char head[512];
++        const DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
++        CrashWrite("");
++        CrashWrite("================ IRIS: 렌더러가 죽었습니다 ================");
++        sprintf_s(head, "  예외 0x%08lX  주소 %p", (unsigned long)code,
++                  ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr);
++        CrashWrite(head);
++        if (code == EXCEPTION_ACCESS_VIOLATION && ep && ep->ExceptionRecord &&
++            ep->ExceptionRecord->NumberParameters >= 2)
++        {
++            sprintf_s(head, "  접근 위반: %s 주소 0x%llx",
++                      ep->ExceptionRecord->ExceptionInformation[0] ? "쓰기" : "읽기",
++                      (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1]);
++            CrashWrite(head);
++        }
++        CrashWrite("  스택 (위가 죽은 자리):");
++        if (ep && ep->ContextRecord)
++            CrashDumpStack(ep->ContextRecord);
++        CrashWrite("==========================================================");
++        return EXCEPTION_EXECUTE_HANDLER;   // 조용히 끝냅니다 — 대화상자 없이
++    }
++
++    // Debug 빌드의 assert 를 가로챕니다. 기본값은 모달 대화상자라서
++    // 화면 밖에서 돌리면 그대로 멈춥니다.
++    inline int __cdecl CrashCrtReport(int type, char* msg, int* ret)
++    {
++        if (type == _CRT_ASSERT || type == _CRT_ERROR)
++        {
++            CrashWrite("");
++            CrashWrite("================ IRIS: assert 가 걸렸습니다 ================");
++            CrashWrite(msg ? msg : "(내용 없음)");
++            CrashWrite("  스택 (위가 걸린 자리):");
++            CONTEXT ctx{};
++            RtlCaptureContext(&ctx);
++            CrashDumpStack(&ctx);
++            CrashWrite("============================================================");
++            if (ret) *ret = 0;   // 디버거로 안 넘깁니다
++            _exit(3);
++        }
++        return FALSE;   // 나머지는 평소대로
++    }
++
++    inline void InstallCrashReporter()
++    {
++        SetUnhandledExceptionFilter(CrashFilter);
++        // 일부 CRT 경로는 예외를 삼키고 스스로 끝냅니다. 그것도 막습니다.
++        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
++#ifdef _DEBUG
++        _CrtSetReportHook(CrashCrtReport);
++        _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
++        _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
++        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
++        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
++#endif
++        CrashWrite("");
++        CrashWrite("---- IRIS 크래시 보고기가 붙었습니다 ----");
++    }
++}
++
++#endif // _WIN32
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+index c804747..99a8ab9 100644
+--- a/Rtxpt/Iris/IrisSettings.h
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -72,15 +72,12 @@ namespace iris
+         // 채널**에 있습니다(11번 (a)). 켜면 그런 재질을 알파 테스트로
+         // 그려 구멍이 살아납니다.
+         //
+-        // ⚠ **기본값이 꺼짐인 이유** — 켜면 렌더러가 죽습니다.
+-        //   호스트 쪽(프로브 측정 · 프로토콜 · SceneBuilder)은 시험까지
+-        //   끝냈고, `MaterialDomain::AlphaTested` 를 하나라도 만들면
+-        //   RTXPT 가 씬 적용 직후 세그폴트합니다. 통제 시험으로 갈랐고
+-        //   (같은 빌드에서 칠한 면 하나만 되돌리면 멀쩡합니다) 원인은
+-        //   아직 못 찾았습니다. 11번 문서에 아는 것을 적어 뒀습니다.
++        // 한동안 렌더러가 죽어서 꺼 두었습니다. 원인은 nvrhi 의 널 검사
++        // 누락이었고(OmmBaker.cpp 의 '섞인 메시' 주석), 우리 쪽 가드로
++        // 막았습니다. 화면으로 확인한 뒤 다시 켭니다.
+         //
+         // **씬을 다시 받아야** 적용됩니다.
+-        bool alphaCutout = false;
++        bool alphaCutout = true;
+ 
+         // 엔진이 실제로 쓰는 값. 뒤집힌 의미를 한곳에서만 다룹니다.
+         [[nodiscard]] float CloudDensityOffset() const
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index f587933..6208bfc 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -28,7 +28,6 @@
+ #include <json/json.h>
+ 
+ #include <fstream>
+-#include <set>   // IRIS 진단용
+ 
+ #include <unordered_set>
+ 
+@@ -994,29 +993,6 @@ void UpdateSubInstanceData(SubInstanceData & ret, const std::shared_ptr<Extended
+ 
+     const std::shared_ptr<MeshInfo>& mesh = meshInstance.GetMesh();
+ 
+-    // IRIS 진단: 알파 테스트 재질이 들어오면 렌더러가 죽습니다. 이 분기에서만
+-    // 죽으므로 무엇이 비어 있는지 찍습니다. 재질 이름별로 한 번만 —
+-    // 서브인스턴스마다 찍으면 수천 줄이 됩니다.
+-    if (material.HasAlphaTest())
+-    {
+-        static std::set<std::string> s_irisSeen;
+-        if (s_irisSeen.insert(material.Name).second)
+-        {
+-            donut::log::info("IRIS 알파진단 '%s': 텍스처켬=%d 로드=%p GPU텍스처=%p "
+-                             "디스크립터=%u UV속성=%d 지오데이터=%d 퍼뮤테이션=%p cutoff=%.3f 최종알파테스트=%d",
+-                material.Name.c_str(),
+-                (int)material.EnableBaseTexture,
+-                (void*)material.BaseTexture.Loaded.get(),
+-                (void*)(material.BaseTexture.Loaded ? material.BaseTexture.Loaded->texture.Get() : nullptr),
+-                material.BaseTexture.Loaded ? material.BaseTexture.Loaded->bindlessDescriptor.Get() : 0xFFFFFFFFu,
+-                (int)(mesh && mesh->buffers ? (int)mesh->buffers->hasAttribute(VertexAttribute::TexCoord1) : -1),
+-                (int)(scene->GetGeometryData(geometry) != nullptr),
+-                (void*)material.BakedShaderPermutation.get(),
+-                material.AlphaCutoff,
+-                (int)alphaTest);
+-        }
+-    }
+-
+     ret.FlagsAndAlphaInfo = 0;
+     if (alphaTest)
+     {
+diff --git a/Rtxpt/OpacityMicroMap/OmmBaker.cpp b/Rtxpt/OpacityMicroMap/OmmBaker.cpp
+index 30bacb3..2bd717e 100644
+--- a/Rtxpt/OpacityMicroMap/OmmBaker.cpp
++++ b/Rtxpt/OpacityMicroMap/OmmBaker.cpp
+@@ -102,6 +102,8 @@ void OmmBaker::CreateOpacityMicromaps(const donut::engine::Scene& scene)
+     m_uiData.BuildsLeftInQueue = 0;
+     m_uiData.BuildsQueued = 0;
+ 
++    int skippedMixed = 0;   // IRIS: 아래 '섞인 메시' 주석 참조
++
+     for (auto& mesh : scene.GetSceneGraph()->GetMeshes())
+     {
+         if (mesh->isSkinPrototype) //buffers->hasAttribute(engine::VertexAttribute::JointWeights))
+@@ -148,10 +150,6 @@ void OmmBaker::CreateOpacityMicromaps(const donut::engine::Scene& scene)
+                                     geometry.material->baseOrDiffuseTexture->path.c_str());
+                 continue;
+             }
+-            donut::log::info("IRIS: OMM 대상 '%s' — CPU이미지=%p GPU텍스처=%p",
+-                             material->Name.c_str(), (void*)alphaTexture.get(),
+-                             (void*)material->BaseTexture.Loaded->texture.Get());
+-
+             OmmBuildQueue::BuildInput::Geometry geom;
+             geom.geometryIndexInMesh = i;
+             geom.alphaTexture = alphaTexture;
+@@ -172,12 +170,46 @@ void OmmBaker::CreateOpacityMicromaps(const donut::engine::Scene& scene)
+             input.geometries.push_back(geom);
+         }
+ 
+-        if (input.geometries.size() != 0ull)
++        if (input.geometries.empty())
++            continue;
++
++        // **섞인 메시는 건너뜁니다** — 안 그러면 드라이버 밑에서 죽습니다.
++        //
++        // nvrhi 의 `fillD3dGeometryOMMLinkageDesc`(d3d12-raytracing.cpp:650)
++        // 는 널 검사가 없습니다:
++        //
++        //     outLinkage.OpacityMicromapArray = triangles.opacityMicromap->getDeviceAddress();
++        //
++        // 바로 아래 665줄, 같은 일을 하는 NVAPI 경로는 검사합니다. 그리고
++        // 호출부(772~777)는 지오메트리 **하나라도** OMM 이 있으면 **전부**에
++        // 대해 링키지를 채웁니다. 즉 한 메시 안에 OMM 있는 것과 없는 것이
++        // 섞이면 없는 쪽에서 **0x0 읽기**로 죽습니다.
++        //
++        // RTXPT 기본 씬에는 없는 조합입니다. 그런데 **SketchUp 정의는 재질
++        // 버킷이 여럿**이라 한 메시 안에 알파 테스트와 불투명이 섞이는 것이
++        // 보통입니다. 알파 컷아웃을 켜자마자 렌더러가 죽은 이유입니다
++        // (IRIS 11번 (a), 크래시 스택으로 확인).
++        //
++        // OMM 은 **가속 구조 최적화**일 뿐이고 알파 테스트 자체는 애니히트
++        // 셰이더로 돕니다 — 건너뛰어도 화면은 맞습니다. 느려질 뿐입니다.
++        //
++        // 제대로 된 고침은 nvrhi 한 줄입니다:
++        //   tools/rtxpt/patches/nvrhi-omm-linkage-null.patch
++        // nvrhi 는 중첩 서브모듈(RTXPT -> Donut -> nvrhi)이라 그 수정은
++        // 다른 체크아웃으로 따라가지 않습니다. 그래서 기본은 이 가드입니다.
++        if (input.geometries.size() != mesh->geometries.size())
+         {
+-            m_uiData.BuildsQueued += (uint32_t)input.geometries.size();
+-            m_ommBuildQueue->QueueBuild(input);
++            ++skippedMixed;
++            continue;
+         }
++
++        m_uiData.BuildsQueued += (uint32_t)input.geometries.size();
++        m_ommBuildQueue->QueueBuild(input);
+     }
++
++    if (skippedMixed > 0)
++        donut::log::info("IRIS: OMM — 알파 테스트와 불투명이 섞인 메시 %d개를 건너뛰었습니다 "
++                         "(nvrhi 의 널 검사 누락 회피, OmmBaker.cpp 주석 참조)", skippedMixed);
+ }
+ 
+ void OmmBaker::DestroyOpacityMicromaps(nvrhi::ICommandList& commandList, const donut::engine::Scene& scene)
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index ff6f539..5b70aee 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -487,16 +487,14 @@ void SampleUI::buildUI(void)
+ 
+             ImGui::SeparatorText("Textures");
+             // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 텍스처의 알파
+-            // 채널에 있습니다. 켜면 렌더러가 죽습니다 — 경위는
+-            // IrisSettings.h 의 alphaCutout 주석과 11번 (a).
+-            if (ImGui::Checkbox("Texture alpha cutout (UNSTABLE)", &s.alphaCutout))
++            // 채널에 있습니다(11번 (a)).
++            if (ImGui::Checkbox("Texture alpha cutout", &s.alphaCutout))
+                 save = true;
+             if (ImGui::IsItemHovered())
+                 ImGui::SetTooltip("Cut holes using the texture's alpha channel\n"
+                                   "(leaves, railings, perforated panels).\n\n"
+-                                  "WARNING: this currently crashes the renderer.\n"
+-                                  "The host side is measured and tested; the fault\n"
+-                                  "is on the engine side and is not found yet.\n\n"
++                                  "Only materials whose texture really has holes get\n"
++                                  "alpha tested - the probe measures the channel.\n\n"
+                                   "Applies on the next sync from SketchUp.");
+ 
+             ImGui::SeparatorText("Light conversion");

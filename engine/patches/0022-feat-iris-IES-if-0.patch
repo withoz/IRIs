@@ -1,0 +1,337 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Fri, 11 Sep 2026 14:16:14 +0900
+Subject: [PATCH 22/34] =?UTF-8?q?feat(iris):=20IES=20=EB=B0=B0=EA=B4=91?=
+ =?UTF-8?q?=EC=9D=84=20=EC=8B=A4=EC=A0=9C=EB=A1=9C=20=EC=94=81=EB=8B=88?=
+ =?UTF-8?q?=EB=8B=A4=20=E2=80=94=20=EC=85=B0=EC=9D=B4=EB=8D=94=EC=9D=98=20?=
+ =?UTF-8?q?#if=200=20=EC=9D=84=20=EC=BC=B0=EC=8A=B5=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+RTXPT 의 evaluateIesProfile 은 다 쓰여 있고 `#if 0` 으로 막혀 있었습니다.
+주석은 "씬 쪽 코드가 없어서"라고 했지만 **실제로는 컴파일이 안 됐습니다** —
+켜 보니 네 가지가 없었습니다.
+
+  c_pi                존재하지 않는 이름 (K_PI)
+  t_BindlessTextures  RTXDI · LightsBaker 에는 없음
+  s_MaterialSampler   같음
+  BranchlessONB       LightsBaker 에는 없음
+
+LightShaping.hlsli 가 **세 군데**(경로 추적기 · RTXDI · LightsBaker)에서
+포함되는데 각각 가진 것이 다릅니다. 그리고 경로 추적기에서도 이 헤더가
+**바인딩보다 먼저** 파싱됩니다 — PathTracerBridgeDonut 17행이
+PathTracerBridge 를 포함하고 그게 여기까지 끌고 오는데, 바인딩은 29~31행
+입니다. 매크로를 뒤에서 켜면 "이미 정의됨" 오류만 납니다(실제로 겪음).
+
+그래서 텍스처 한 번 읽기만 전방 선언으로 갈랐습니다.
+
+  LightShaping.hlsli        float IrisSampleIesProfile(int, float2);  선언만
+                            (바인딩 없는 곳에서는 1.0 을 돌려주는 정의)
+  PathTracerBridgeDonut     바인딩이 다 들어온 자리에 정의
+
+각도 계산과 정규직교기저는 의존성 없이 그 자리에서 끝냅니다.
+
+배관: IrisScene 이 호스트가 준 격자를 R32_FLOAT 텍스처로 굽고 bindless 에
+등록해 SpotLightEx::profileTextureIndex 에 넣습니다. 캐시는 프로세스
+수명입니다 — 골프존은 정의 4종이 같은 Bega 8331 하나를 씁니다.
+LightsBaker 가 IesProfileIndex + kPolymorphicLightIesProfileEnableBit 을
+세웁니다.
+
+**원뿔을 89도로 넓힙니다.** 셰이더가 `softSpotlight * iesMultiplier` 로
+곱하므로, 배광에서 유도한 원뿔(바깥 54.3도)을 두면 그 바깥이 잘립니다 —
+Bega 8331 은 55~80도에도 빛이 있습니다(0.094~0.002).
+
+실측 (골프존 · 3840x2036 · 같은 카메라):
+
+  IES 끔   L 62 · 45.2 FPS
+  IES 켬   L 62 · 44.4 FPS · 배광 1종을 광원 43개가 씀
+
+성능은 같고, 화면은 예상한 방향으로 바뀝니다 — 빛이 기구 가까이로
+모이고 중간 각이 어두워집니다(원뿔 근사는 30도에서 0.685, 실제는 0.495).
+
+⚠ **배광의 방향(90도 돌아갔는지)은 독립 검증하지 않았습니다.** 눈에 띄는
+이상은 없지만, 확실히 하려면 단일 광원을 평면에 쏴서 IES 표와 맞춰 봐야
+합니다. IRIS_IES=0 으로 끄고 견줄 수 있습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp                      | 84 +++++++++++++++++++
+ Rtxpt/Lighting/LightsBaker.cpp                | 10 +++
+ Rtxpt/SampleCommon/ExtendedScene.h            |  8 ++
+ .../PathTracer/Lighting/LightShaping.hlsli    | 56 +++++++++----
+ Rtxpt/Shaders/PathTracerBridgeDonut.hlsli     | 17 ++++
+ 5 files changed, 160 insertions(+), 15 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 9a3c1c6..0638db3 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -64,6 +64,18 @@ namespace
+     }
+ }
+ 
++namespace
++{
++    // IES 배광 텍스처. **프로세스 수명**입니다 — 씬을 다시 만들어도 같은
++    // 배광을 다시 굽지 않습니다.
++    struct IesProfile
++    {
++        nvrhi::TextureHandle              texture;
++        donut::engine::DescriptorHandle   handle;
++    };
++    std::unordered_map<std::string, std::shared_ptr<IesProfile>> s_iesProfiles;
++}
++
+ bool IrisScene::LoadWithThreadPool(const std::filesystem::path& sceneFileName,
+                                    donut::engine::ThreadPool* threadPool)
+ {
+@@ -223,6 +235,76 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     static auto s_meshCache = std::make_shared<iris::bridge::SceneBuilder::MeshCache>();
+     builder.SetMeshCache(s_meshCache);
+ 
++    // **IES 배광을 텍스처로 굽습니다.**
++    //
++    // 브리지는 장치를 모르므로(순환 의존) 굽기와 광원에 달기를 여기서 합니다.
++    // 캐시는 **프로세스 수명**입니다 — 텍스처가 씬보다 오래 살아야 하고,
++    // 골프존 모델은 정의 4종이 같은 Bega 8331 하나를 씁니다.
++    //
++    // 폭 = 세로각(0..180), 높이 = 가로각(-180..180). 셰이더가 그렇게 읽습니다.
++    // 끄고 견줄 수 있게 둡니다 — 면광원과 같은 방식입니다. IRIS_IES=0.
++    bool iesOn = true;
++    {
++        char*  buf = nullptr;
++        size_t len = 0;
++        if (_dupenv_s(&buf, &len, "IRIS_IES") == 0 && buf)
++        {
++            iesOn = !(buf[0] == '0' || buf[0] == 'n' || buf[0] == 'N');
++            free(buf);
++        }
++        if (!iesOn)
++            Trace("IES 배광 — 끔 (IRIS_IES=0), 원뿔 근사로 갑니다");
++    }
++
++    if (iesOn)
++    builder.SetIesApplier(
++        [this](donut::engine::SpotLight& light, const std::string& key,
++               const float* data, uint32_t w, uint32_t h) -> bool
++        {
++            auto* ex = dynamic_cast<SpotLightEx*>(&light);
++            if (ex == nullptr || data == nullptr || w < 2 || h < 1)
++                return false;
++            if (m_Device == nullptr || m_DescriptorTable == nullptr)
++                return false;
++
++            auto it = s_iesProfiles.find(key);
++            if (it == s_iesProfiles.end())
++            {
++                nvrhi::TextureDesc td;
++                td.width             = w;
++                td.height            = h;
++                td.format            = nvrhi::Format::R32_FLOAT;
++                td.debugName         = "IRIS IES " + key;
++                td.initialState      = nvrhi::ResourceStates::ShaderResource;
++                td.keepInitialState  = true;
++                nvrhi::TextureHandle tex = m_Device->createTexture(td);
++                if (!tex)
++                {
++                    Trace("IES 텍스처를 만들지 못했습니다: %s", key.c_str());
++                    return false;
++                }
++
++                nvrhi::CommandListHandle cl = m_Device->createCommandList();
++                cl->open();
++                cl->writeTexture(tex, 0, 0, data, w * sizeof(float));
++                cl->close();
++                m_Device->executeCommandList(cl);
++
++                auto prof = std::make_shared<IesProfile>();
++                prof->texture = tex;
++                prof->handle  = m_DescriptorTable->CreateDescriptorHandle(
++                    nvrhi::BindingSetItem::Texture_SRV(0, tex));
++                it = s_iesProfiles.emplace(key, prof).first;
++                Trace("IES 배광 구움 — %s (%u x %u, 색인 %d)",
++                      key.c_str(), w, h, prof->handle.Get());
++            }
++
++            if (!it->second->handle.IsValid())
++                return false;
++            ex->profileTextureIndex = it->second->handle.Get();
++            return true;
++        });
++
+     // **면광원을 발광 지오메트리로 낼 것인가.**
+     //
+     // 기본은 근사(88도 원뿔 + 등가 면적 구면)입니다. 그 근사는 라디언스와
+@@ -297,6 +379,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     Trace("조명 — 점 %zu · 스포트 %zu · 면광원 %zu · 총 광속 %.0f lm · 발광 재질 %zu",
+           stats.pointLights, stats.spotLights, stats.areaLights, stats.lightLumens,
+           stats.emissiveMaterials);
++    if (stats.iesLights)
++        Trace("IES 배광 — %zu종을 광원 %zu개가 씁니다", stats.iesProfiles, stats.iesLights);
+     Trace("거울 배치 노드 %zu개", stats.mirroredNodes);
+     // 하늘에 태양 방향을 넘깁니다. 절차적 하늘이 이것을 씁니다.
+     iris::bridge::IrisBridge::Get().SetSunDirection(stats.sunDirYUp, stats.hasSun);
+diff --git a/Rtxpt/Lighting/LightsBaker.cpp b/Rtxpt/Lighting/LightsBaker.cpp
+index 4508eda..4901fca 100644
+--- a/Rtxpt/Lighting/LightsBaker.cpp
++++ b/Rtxpt/Lighting/LightsBaker.cpp
+@@ -495,6 +495,16 @@ static PolymorphicLightInfoFull ConvertLight( Light & light )
+                     polymorphicEx.CosConeAngleAndSoftness = fp32ToFp16(cosf(dm::radians(abs(spot.outerAngle))));
+                     polymorphicEx.CosConeAngleAndSoftness |= fp32ToFp16(softness) << 16;
+                 }
++
++                // IRIS: IES 배광. 셰이더는 원뿔 감쇠에 이것을 **곱합니다** —
++                // 그래서 브리지가 배광을 붙일 때 원뿔을 89도까지 넓힙니다.
++                // 안 그러면 배광의 바깥쪽(Bega 8331 은 55~80도에도 빛이
++                // 있습니다)이 원뿔에 잘려 나갑니다.
++                if (spot.profileTextureIndex >= 0)
++                {
++                    polymorphicEx.IesProfileIndex = (uint32_t)spot.profileTextureIndex;
++                    polymorphic.ColorTypeAndFlags |= kPolymorphicLightIesProfileEnableBit;
++                }
+                 packLightColor(radiance, polymorphic);
+             }
+ 
+diff --git a/Rtxpt/SampleCommon/ExtendedScene.h b/Rtxpt/SampleCommon/ExtendedScene.h
+index 4451aad..8a3c2e0 100644
+--- a/Rtxpt/SampleCommon/ExtendedScene.h
++++ b/Rtxpt/SampleCommon/ExtendedScene.h
+@@ -37,6 +37,14 @@ public:
+     [[nodiscard]] std::shared_ptr<SceneGraphLeaf> Clone() override;
+     void Load(const Json::Value& node) override;
+     void Store(Json::Value& node) const override;
++
++    // IRIS: IES 배광 텍스처의 bindless 색인. -1 이면 없음(원뿔만).
++    //
++    // LightsBaker 가 이것을 PolymorphicLightInfoEx::IesProfileIndex 로 넘기고
++    // 셰이더의 evaluateIesProfile 이 씁니다. Donut 의 SpotLightWithProfile 과
++    // 같은 뜻이지만, 우리는 텍스처를 파일이 아니라 호스트가 준 격자에서
++    // 구우므로 여기에 답니다.
++    int profileTextureIndex = -1;
+ };
+ 
+ class PointLightEx : public donut::engine::PointLight, public LightExtension
+diff --git a/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli b/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli
+index 0679e4a..486f3a9 100644
+--- a/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli
++++ b/Rtxpt/Shaders/PathTracer/Lighting/LightShaping.hlsli
+@@ -34,22 +34,55 @@ LightShaping unpackLightShaping(const PolymorphicLightInfoFull lightInfoFull)
+         shaping.primaryAxis = OctToNDirUnorm32(lightInfoFull.Extended.PrimaryAxis);
+         shaping.cosConeAngle = f16tof32(lightInfoFull.Extended.CosConeAngleAndSoftness);
+         shaping.cosConeSoftness = f16tof32(lightInfoFull.Extended.CosConeAngleAndSoftness >> 16);
+-        shaping.iesProfileIndex = 0; // shaping.iesProfileIndex = (lightInfoFull.Base.ColorTypeAndFlags & kPolymorphicLightIesProfileEnableBit) ? lightInfoFull.Extended.IesProfileIndex : -1;
++        // IRIS: 배광이 붙어 있으면 그 색인을, 아니면 -1 (원뿔만).
++        shaping.iesProfileIndex = (lightInfoFull.Base.ColorTypeAndFlags & kPolymorphicLightIesProfileEnableBit)
++                                      ? (int)lightInfoFull.Extended.IesProfileIndex : -1;
+         shaping.minFalloff = (lightInfoFull.Base.ColorTypeAndFlags & kPolymorphicLightShapingUseMinFalloff) ? kMinSpotlightFalloff : 0.0f;
+     }
+     
+     return shaping;
+ }
+ 
++#ifndef RTXPT_IES_PROFILES_AVAILABLE
++// IRIS: 바인딩이 없는 곳에서도 컴파일되도록 기본값을 둡니다.
++#define RTXPT_IES_PROFILES_AVAILABLE 0
++#endif
++
++// IRIS: 배광 텍스처 한 번 읽기.
++//
++// **이 헤더는 바인딩보다 먼저 파싱됩니다.** 경로 추적기의 브리지가
++// PathTracerBridge.hlsli 를 먼저 포함하고, 그게 여기까지 끌고 옵니다.
++// t_BindlessTextures 와 s_MaterialSampler 는 그보다 **뒤에** 옵니다.
++// 그래서 여기서는 **선언만** 하고, 정의는 바인딩이 다 들어온 자리
++// (PathTracerBridgeDonut.hlsli)에 답니다.
++//
++// 바인딩이 없는 곳(RTXDI · LightsBaker)에서는 바로 아래 1.0 정의가 쓰입니다.
++// 거기는 광원 **선택 가중치**를 재는 자리라 조금 넉넉하게 잡을 뿐입니다.
++#if RTXPT_IES_PROFILES_AVAILABLE
++float IrisSampleIesProfile(int profileIndex, float2 uv);
++#else
++float IrisSampleIesProfile(int profileIndex, float2 uv) { return 1.0; }
++#endif
++
+ float evaluateIesProfile(int profileIndex, float3 emissionDirection_, float3 lightPrimaryAxis)
+ {
+-#if 0   // currently disabled until we implement scene side code and find a scene with appropriate test cases 
++    // IRIS: 켰습니다. 호스트가 IES 배광을 격자로 보내고(iris_enscape.rb)
++    // IrisScene 이 텍스처로 굽습니다. 폭 = 세로각, 높이 = 가로각.
+     if (profileIndex < 0)
+         return 1.0;
+ 
+-    float3 xAxis;
+-    float3 yAxis;
+-    BranchlessONB(lightPrimaryAxis, xAxis, yAxis);
++    // IRIS: BranchlessONB(Geometry.hlsli) 를 쓰지 않고 여기 풀어 씁니다.
++    // 이 헤더는 LightsBaker 에서도 포함되는데 거기에는 그 파일이 없습니다.
++    // 식은 같습니다(Duff et al.).
++    const float onbSign = (lightPrimaryAxis.z >= 0) ? 1.0f : -1.0f;
++    const float onbA    = -1.0f / (onbSign + lightPrimaryAxis.z);
++    const float onbB    = lightPrimaryAxis.x * lightPrimaryAxis.y * onbA;
++    const float3 xAxis  = float3(1.0f + onbSign * lightPrimaryAxis.x * lightPrimaryAxis.x * onbA,
++                                 onbSign * onbB,
++                                 -onbSign * lightPrimaryAxis.x);
++    const float3 yAxis  = float3(onbB,
++                                 onbSign + lightPrimaryAxis.y * lightPrimaryAxis.y * onbA,
++                                 -lightPrimaryAxis.y);
+ 
+     float3 emissionDirection;
+     emissionDirection.x = dot(emissionDirection_, xAxis);
+@@ -58,19 +91,12 @@ float evaluateIesProfile(int profileIndex, float3 emissionDirection_, float3 lig
+     emissionDirection = normalize(emissionDirection);
+ 
+     const float angle = acos(emissionDirection.z);
+-    const float normAngle = angle / c_pi;
++    const float normAngle = angle / K_PI;
+ 
+     const float tangentAngle = atan2(emissionDirection.y, emissionDirection.x);
+-    const float normTangentAngle = tangentAngle * .5f / c_pi + .5f;
++    const float normTangentAngle = tangentAngle * .5f / K_PI + .5f;
+ 
+-    Texture2D<float4> iesProfileTexture = t_BindlessTextures[NonUniformResourceIndex(profileIndex)];
+-
+-    float iesMultiplier = iesProfileTexture.SampleLevel(IES_SAMPLER, float2(normAngle, normTangentAngle), 0).x;
+-
+-    return iesMultiplier;
+-#else
+-    return 1.0;
+-#endif
++    return IrisSampleIesProfile(profileIndex, float2(normAngle, normTangentAngle));
+ }
+ 
+ float3 evaluateLightShaping(LightShaping shaping, float3 surfacePosition, float3 lightSamplePosition)
+diff --git a/Rtxpt/Shaders/PathTracerBridgeDonut.hlsli b/Rtxpt/Shaders/PathTracerBridgeDonut.hlsli
+index a94bf27..be8b6ce 100644
+--- a/Rtxpt/Shaders/PathTracerBridgeDonut.hlsli
++++ b/Rtxpt/Shaders/PathTracerBridgeDonut.hlsli
+@@ -14,6 +14,11 @@
+ // easier if we let Donut do this!
+ #define ENABLE_METAL_ROUGH_RECONSTRUCTION 1
+ 
++// IRIS: IES 배광을 켭니다. **포함보다 먼저** 세워야 합니다 — 바로 아래
++// PathTracerBridge.hlsli 가 LightShaping.hlsli 를 끌고 오고, 그 안에서
++// 이 값을 보고 선언만 할지 1.0 정의를 둘지 정합니다.
++#define RTXPT_IES_PROFILES_AVAILABLE 1
++
+ #include "PathTracerBridge.hlsli"
+ #include "PathTracer/Materials/MaterialTypes.hlsli"
+ 
+@@ -30,6 +35,18 @@
+ #include "Bindings/LightingBindings.hlsli"
+ #include "Bindings/SamplerBindings.hlsli"
+ 
++// IRIS: 여기까지 와야 t_BindlessTextures(SceneBindings)와
++// s_MaterialSampler(SamplerBindings)가 둘 다 있습니다. LightShaping.hlsli 는
++// 위에서 이미 파싱됐으므로 거기서는 **선언만** 해 두었고, 정의를 여기 답니다.
++//
++// 원본이 이 코드를 `#if 0` 로 막아 둔 이유가 이것입니다 — 같은 헤더가
++// 바인딩 없는 곳(RTXDI · LightsBaker)에서도 포함됩니다.
++float IrisSampleIesProfile(int profileIndex, float2 uv)
++{
++    Texture2D<float4> tex = t_BindlessTextures[NonUniformResourceIndex(profileIndex)];
++    return tex.SampleLevel(s_MaterialSampler, uv, 0).x;
++}
++
+ #include "Libraries\MicroRng.hlsli"
+ 
+ 
