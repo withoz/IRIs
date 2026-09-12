@@ -16,6 +16,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <set>
 #include <memory>
 #include <string>
@@ -75,6 +76,12 @@ namespace iris::bridge
         size_t   authorIor          = 0;  // Enscape 굴절률을 쓴 재질
         size_t   bumpMaterials      = 0;  // 높이맵에서 구운 노멀맵을 쓴 재질
         size_t   bumpSkipped        = 0;  // 범프 세기는 있는데 쓸 그림이 없던 것
+
+        // **Enscape 값이 없는 재질을 어떻게 추측했나** (11번 (g)).
+        // 어떤 규칙이 몇 개를 잡았는지 남깁니다 — 규칙이 조용히 오작동하면
+        // 화면만 보고는 알 수 없기 때문입니다.
+        std::map<std::string, size_t> surfaceRules;            // 규칙 이름 -> 재질 수
+        size_t                        surfaceDefaulted = 0;    // 규칙 없이 기본값으로 간 것
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
@@ -287,6 +294,16 @@ namespace iris::bridge
         // Enscape 가 IsSolidGlass 를 말했으면 그 값이 이깁니다.
         void SetGlassThinDefault(bool thin) { m_glassThinDefault = thin; }
 
+        // **Enscape 값이 없을 때 쓸 거칠기** — 11번 (g).
+        //
+        // 0.9 는 같은 모델의 Enscape 재질 27벌에서 잰 값입니다(SurfaceGuess.h).
+        // 지금까지 쓰던 0.5 는 근거가 없었고 실측 분포의 가장 반짝이는 끝입니다.
+        // **씬을 다시 받아야** 적용됩니다.
+        void SetRoughnessDefault(float r) { m_roughnessDefault = (r < 0.0f) ? 0.0f : (r > 1.0f ? 1.0f : r); }
+
+        // 이름 표를 쓸 것인가 — 11번 (g). 끄면 전부 기본값으로 갑니다.
+        void SetSurfaceNameRules(bool on) { m_surfaceNameRules = on; }
+
         // 범프 세기 배율. Enscape 의 BumpAmount(0.1~3.0)를 엔진의
         // normalTextureScale 로 옮길 때 곱합니다 — 대응은 **가정**이라
         // 밖으로 뺐습니다(11번 (d)).
@@ -333,6 +350,8 @@ namespace iris::bridge
         bool  m_alphaCutout       = false;
         bool  m_glassThinDefault  = true;
         float m_bumpStrength      = 1.0f;
+        float m_roughnessDefault  = 0.9f;   // 11번 (g) — 실측 기본값
+        bool  m_surfaceNameRules  = true;
         // 노멀맵을 쓰는 재질이 하나라도 있으면 참. 그때만 탄젠트를 만듭니다
         // (정점당 4바이트). BuildMaterials 가 켜고 BuildMeshes 가 봅니다.
         bool  m_anyNormalMap      = false;

@@ -1,4 +1,5 @@
 #include "SceneBuilder.h"
+#include "SurfaceGuess.h"
 
 #include "iris/protocol/IrisbReader.h"
 #include "HeightToNormal.h"
@@ -263,10 +264,24 @@ namespace iris::bridge
                 ? float3(1.0f, 1.0f, 1.0f)
                 : float3(sm.color[0], sm.color[1], sm.color[2]);
 
-            // SketchUp 은 PBR 파라미터를 주지 않습니다. 아래는 건축 재질에 대한
-            // 잠정 휴리스틱이며, Enscape 값이 있으면 바로 아래에서 덮어씁니다.
-            m->metalness = 0.0f;
-            m->roughness = 0.5f;
+            // **SketchUp 은 PBR 파라미터를 주지 않습니다.**
+            //
+            // 지금까지는 전부 `0.5 / 0`  고정이었습니다. 0.5 는 재고 정한 값이
+            // 아니었고, 같은 모델의 Enscape 재질을 재 보니 **가장 반짝이는
+            // 쪽 끝**이었습니다(SurfaceGuess.h 의 측정). 기본값을 그쪽에서
+            // 가져오고, 이름으로 분명히 갈리는 것만 표로 덜어 냅니다.
+            //
+            // Enscape 값이 있으면 바로 아래에서 통째로 덮어씁니다.
+            {
+                const SurfaceGuess guess =
+                    GuessSurface(sm.name, m_roughnessDefault, m_surfaceNameRules);
+                m->roughness = guess.roughness;
+                m->metalness = guess.metalness;
+                if (guess.rule != nullptr)
+                    ++stats.surfaceRules[guess.rule];
+                else
+                    ++stats.surfaceDefaulted;
+            }
 
             // Enscape 가 남긴 값이 있으면 그것이 정답입니다 — 설계자가 직접
             // 정한 값이고, 우리가 추측한 고정값보다 언제나 낫습니다.

@@ -1,0 +1,228 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 16:14:23 +0900
+Subject: [PATCH 36/36] =?UTF-8?q?feat(iris):=20=EA=B1=B0=EC=B9=A0=EA=B8=B0?=
+ =?UTF-8?q?=20=EA=B8=B0=EB=B3=B8=EA=B0=92=200.5=20->=200.9=20(=EC=8B=A4?=
+ =?UTF-8?q?=EC=B8=A1)=20+=20=EC=9D=B4=EB=A6=84=20=EA=B7=9C=EC=B9=99=20?=
+ =?UTF-8?q?=EC=8A=A4=EC=9C=84=EC=B9=98?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Enscape 값이 없는 재질은 지금까지 전부 roughness 0.5 였습니다. 0.5 는 재고
+정한 값이 아니었습니다.
+
+같은 모델에서 Enscape 값이 **있는** 재질 27벌을 세어 보니 0.90 에 10개가
+몰려 있고, 그 10개는 잔디·돌·검은 라미네이트·전기 레이스웨이처럼 서로
+전혀 다른 재질인데 R=0.900 M=0.000 S=0.500 이 한 글자도 다르지 않습니다.
+그중 4개는 SELF_ILLUMINATED — 발광면은 거칠기가 화면에 드러나지 않아
+저작자가 일부러 맞출 이유가 없습니다. Enscape 의 기본값으로 봅니다.
+
+  설정   roughness_default (기본 0.9) · surface_name_rules (기본 켬)
+  UI     Surface defaults — Default roughness / Guess from material name
+  로그   "거칠기 추측 — 기본값 0.90 로 간 재질 92개 · 이름 규칙: 가죽 1개 …"
+         추적 파일에도 같이 남깁니다. A/B 때 값이 정말 건너왔는지
+         확인하는 줄입니다.
+
+A/B (같은 빌드·카메라·노출, 렌더러는 사이에 다시 띄움):
+  A 0.50 규칙 끔  평균휘도 101.70
+  B 0.90 규칙 켬  평균휘도 101.25 · RMSE 4.73
+평균휘도가 안 움직였습니다 — 빛이 자리를 옮긴 것이고, 차이는 스침각
+반사(코브 조명 아래 천장·기기·소파)에 몰려 있습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp  | 37 +++++++++++++++++++++++++++++++---
+ Rtxpt/Iris/IrisSettings.h | 36 +++++++++++++++++++++++++++++++++
+ Rtxpt/SampleUI.cpp        | 42 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 112 insertions(+), 3 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 3574461..d1458f8 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -205,13 +205,16 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     // Reset() 은 맵만 비우므로 우리가 shared_ptr 을 들고 있으면 살아남습니다.
+     auto* cache = m_TextureCache.get();
+     builder.SetTextureLoader(
+-        [cache](const std::filesystem::path& p) -> std::shared_ptr<LoadedTexture>
++        [cache](const std::filesystem::path& p, bool sRGB) -> std::shared_ptr<LoadedTexture>
+         {
+             auto& bridge = iris::bridge::IrisBridge::Get();
+-            const std::string key = p.generic_string();
++            // 노멀맵은 선형, 색 텍스처는 sRGB 입니다. 키에 넣어 두지 않으면
++            // 같은 파일을 두 해석으로 쓸 때 먼저 온 쪽이 이깁니다 —
++            // 지금은 그런 경우가 없지만 캐시가 조용히 틀리면 안 됩니다.
++            const std::string key = p.generic_string() + (sRGB ? "|s" : "|l");
+             if (auto hit = bridge.FindTexture(key))
+                 return hit;
+-            auto loaded = cache ? cache->LoadTextureFromFileDeferred(p, true) : nullptr;
++            auto loaded = cache ? cache->LoadTextureFromFileDeferred(p, sRGB) : nullptr;
+             bridge.CacheTexture(key, loaded);
+             return loaded;
+         });
+@@ -229,6 +232,7 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+                 ex->IrisHintsSet    = true;
+                 ex->IrisThinSurface = h.thinSurface;
+                 ex->IrisIoR         = h.ior;
++                ex->IrisIgnoreMeshTangentSpace = h.ignoreMeshTangentSpace;
+             }
+         });
+ 
+@@ -374,6 +378,9 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     builder.SetGlassRoughness(iris::Settings::Get().glassRoughness);
+     builder.SetAlphaCutout(iris::Settings::Get().alphaCutout);
+     builder.SetGlassThinDefault(iris::Settings::Get().glassThin);
++    builder.SetBumpStrength(iris::Settings::Get().bumpStrength);
++    builder.SetRoughnessDefault(iris::Settings::Get().roughnessDefault);
++    builder.SetSurfaceNameRules(iris::Settings::Get().surfaceNameRules);
+ 
+     // **태양이 있으면 하늘이 태양을 소유합니다.**
+     //
+@@ -454,6 +461,30 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               stats.textures, stats.cutoutMaterials, stats.cutoutUnmeasured);
+     log::info("IRIS: 유리 — 단면 %zu개 · 덩어리 %zu개 · 저작자 굴절률 %zu개",
+               stats.thinGlass, stats.solidGlass, stats.authorIor);
++    log::info("IRIS: 범프 — 노멀맵 %zu개 (디퓨즈에서 구움) · 쓸 그림이 없어 건너뜀 %zu개",
++              stats.bumpMaterials, stats.bumpSkipped);
++
++    // **어떤 규칙이 왜 걸렸는지.** 추측 규칙은 조용히 틀리기 쉽습니다 —
++    // 화면만 보고는 "재질 12개가 이름 규칙으로 가죽 판정" 을 알 수 없습니다.
++    // A/B 할 때 바뀐 값이 정말 건너왔는지도 이 줄로 확인합니다. 그래서
++    // 추적 파일에도 같이 남깁니다.
++    {
++        std::string detail;
++        for (const auto& entry : stats.surfaceRules)
++        {
++            if (!detail.empty())
++                detail += " · ";
++            detail += entry.first + " " + std::to_string(entry.second) + "개";
++        }
++        char line[1024];
++        snprintf(line, sizeof(line),
++                 "IRIS: 거칠기 추측 — 기본값 %.2f 로 간 재질 %zu개%s%s",
++                 iris::Settings::Get().roughnessDefault, stats.surfaceDefaulted,
++                 detail.empty() ? " (이름 규칙 꺼짐 또는 걸린 것 없음)" : " · 이름 규칙: ",
++                 detail.c_str());
++        log::info("%s", line);
++        Trace("%s", line);
++    }
+     log::info("IRIS: 조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu · Specular 지정 %zu",
+               stats.pointLights, stats.spotLights, stats.lightLumens,
+               stats.emissiveMaterials, stats.specularOverrides);
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+index 783ff8f..499dd76 100644
+--- a/Rtxpt/Iris/IrisSettings.h
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -77,6 +77,36 @@ namespace iris
+         // **씬을 다시 받아야** 적용됩니다.
+         bool glassThin = true;
+ 
++        // ------------------------------------------------------------ 범프
++        //
++        // Enscape 의 `BumpAmount` 는 0.1~3.0 입니다. 엔진의
++        // `normalTextureScale` 과 척도가 달라 대응은 **가정**입니다 —
++        // 최대값이 1.0 이 되도록 옮긴 뒤 이 값을 한 번 더 곱합니다.
++        // 화면으로 맞추라고 밖에 뺐습니다(11번 (d)).
++        //
++        // **씬을 다시 받아야** 적용됩니다.
++        float bumpStrength = 1.0f;
++
++        // --------------------------------------------------- 거칠기 기본값
++        //
++        // **Enscape 값이 없는 재질**(골프존 모델은 135개 중 109개)의 거칠기입니다.
++        //
++        // 지금까지 0.5 였는데 근거가 없었습니다. 같은 모델에서 Enscape 값이
++        // **있는** 재질 27벌을 세어 보니 0.90 에 10개가 몰려 있고, 그 10개는
++        // 잔디·돌·라미네이트·레이스웨이처럼 서로 전혀 다른 재질인데
++        // `R=0.900 M=0.000 S=0.500` 이 한 글자도 다르지 않았습니다. 그중 4개는
++        // SELF_ILLUMINATED — 발광면은 거칠기가 안 보여 일부러 맞출 이유가
++        // 없는데도 정확히 0.900 입니다. **Enscape 의 기본값**으로 봅니다
++        // (out/sketchup/rough_probe.txt · SurfaceGuess.h).
++        //
++        // **씬을 다시 받아야** 적용됩니다.
++        float roughnessDefault = 0.9f;
++
++        // 이름으로 거칠기를 덜어 낼 것인가 — 거울·크롬·타일·대리석·가죽·목재.
++        // 표는 **기본값보다 반짝이는 것만** 담습니다(11번 (g)).
++        // **씬을 다시 받아야** 적용됩니다.
++        bool surfaceNameRules = true;
++
+         // ------------------------------------------------------ 텍스처 컷아웃
+         //
+         // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 **텍스처의 알파
+@@ -142,7 +172,10 @@ namespace iris
+             iesProfiles          = flag("ies_profiles", iesProfiles);
+             glassRoughness       = num("glass_roughness", glassRoughness);
+             glassThin            = flag("glass_thin", glassThin);
++            bumpStrength         = num("bump_strength", bumpStrength);
+             alphaCutout          = flag("alpha_cutout", alphaCutout);
++            roughnessDefault     = num("roughness_default", roughnessDefault);
++            surfaceNameRules     = flag("surface_name_rules", surfaceNameRules);
+         }
+ 
+         void Save() const
+@@ -161,7 +194,10 @@ namespace iris
+             root["ies_profiles"]          = iesProfiles;
+             root["glass_roughness"]       = glassRoughness;
+             root["glass_thin"]            = glassThin;
++            root["bump_strength"]         = bumpStrength;
+             root["alpha_cutout"]          = alphaCutout;
++            root["roughness_default"]     = roughnessDefault;
++            root["surface_name_rules"]    = surfaceNameRules;
+ 
+             std::ofstream f(p, std::ios::trunc);
+             if (!f.good())
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index 0e1aa1d..d74c961 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -559,6 +559,48 @@ void SampleUI::buildUI(void)
+                                   "Turn this off for models with real solid glass.\n\n"
+                                   "Applies on the next sync from SketchUp.");
+ 
++            // 범프. Enscape 의 BumpAmount 를 엔진 척도로 옮기는 대응이
++            // 가정이라 밖에 뺐습니다 — 화면으로 맞춥니다(11번 (d)).
++            ImGui::SliderFloat("Bump strength", &s.bumpStrength, 0.0f, 3.0f, "%.2f");
++            save |= sliderDone();
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Scales Enscape's BumpAmount into the engine's normal scale.\n"
++                                  "The exported diffuse PNG is used as the height map -\n"
++                                  "Enscape's own bump file paths are almost never reachable.\n\n"
++                                  "Applies on the next sync from SketchUp.");
++
++            ImGui::SeparatorText("Surface defaults");
++            // **재질의 80%가 여기를 지납니다.** Enscape 값이 없는 재질은
++            // 지금까지 전부 0.5 였는데 근거가 없었습니다 — 같은 모델의
++            // Enscape 재질을 세어 보니 0.90 에 몰려 있었습니다(11번 (g)).
++            ImGui::SliderFloat("Default roughness", &s.roughnessDefault, 0.0f, 1.0f, "%.2f");
++            save |= sliderDone();
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Roughness for materials with no Enscape data\n"
++                                  "- about 80%% of a typical SketchUp model.\n\n"
++                                  "0.90 is measured: in the golf model, 10 of 27\n"
++                                  "Enscape materials sit at exactly R=0.900 M=0.000\n"
++                                  "S=0.500, including four self-illuminated ones\n"
++                                  "where roughness is invisible. That is a default,\n"
++                                  "not an author's choice.\n\n"
++                                  "The old value was 0.50, which made every surface\n"
++                                  "look like semi-gloss plastic.\n\n"
++                                  "Applies on the next sync from SketchUp.");
++
++            if (ImGui::Checkbox("Guess from material name", &s.surfaceNameRules))
++                save = true;
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("Pull mirror / chrome / stainless / tile / marble /\n"
++                                  "leather / wood away from the default, which is\n"
++                                  "too matte for them.\n\n"
++                                  "Only words that are unambiguous are used. 'metal',\n"
++                                  "'steel' and 'aluminum' are deliberately NOT in the\n"
++                                  "table - in AEC those are usually painted panels, and\n"
++                                  "turning white paint into metal makes a white mirror.\n\n"
++                                  "The log lists which rule fired and how many\n"
++                                  "materials it caught.\n\n"
++                                  "Applies on the next sync from SketchUp.");
++
+             ImGui::SeparatorText("Textures");
+             // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 텍스처의 알파
+             // 채널에 있습니다(11번 (a)).

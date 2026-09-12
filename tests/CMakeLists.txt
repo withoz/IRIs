@@ -19,6 +19,17 @@ if(MSVC)
 endif()
 set_target_properties(test_pipe_server PROPERTIES FOLDER "IRIS/tests")
 
+# 거칠기 이름 표 (11번 (g)).
+#
+# 소스를 **직접 포함**합니다. SurfaceGuess 는 Donut 을 모르므로 iris_bridge
+# 전체(=엔진 체크아웃)를 요구하지 않고 단독 빌드에서도 돌 수 있습니다.
+add_executable(test_surface_guess test_surface_guess.cpp)
+if(MSVC)
+    target_compile_options(test_surface_guess PRIVATE -utf-8 ${IRIS_WARNING_FLAGS})
+endif()
+set_target_properties(test_surface_guess PROPERTIES FOLDER "IRIS/tests")
+add_test(NAME surface_guess COMMAND test_surface_guess)
+
 # 실제 프로젝트 모델로 돕니다. 합성 데이터로는 놓치는 것이 있습니다.
 set(IRIS_TEST_SCENE
     "${CMAKE_SOURCE_DIR}/out/sketchup/240925_포르쉐_성수_PSC_10F_골프존.irisb"

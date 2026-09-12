@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 16:14:18 +0900
+Subject: [PATCH 35/36] =?UTF-8?q?feat(iris):=20=EB=B2=94=ED=94=84=20?=
+ =?UTF-8?q?=ED=9E=8C=ED=8A=B8=EB=A5=BC=20PTMaterial=20=EB=A1=9C=20?=
+ =?UTF-8?q?=EB=82=98=EB=A6=85=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+MaterialEx 에 IrisIgnoreMeshTangentSpace 를 더하고 ImportFromDonut 에서
+PTMaterial::IgnoreMeshTangentSpace 로 옮깁니다. ThinSurface·IoR 과 같은
+길입니다.
+
+이 깃발만으로는 노멀맵이 살아나지 않습니다 — 셰이더가 이것을 보는 자리는
+노멀맵이 적용된 **뒤**라서, 정점 탄젠트가 없으면 ApplyNormalMapRTXPT 가
+그 전에 빠져나갑니다. 탄젠트 생성은 IRIS 저장소의 SceneBuilder 에 있고,
+이 깃발은 그 다음 단계(BSDF 탄젠트 공간)에 맞습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Materials/MaterialsBaker.cpp | 2 ++
+ Rtxpt/Materials/MaterialsBaker.h   | 3 +++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index a914a14..05fa4c3 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -716,6 +716,8 @@ std::shared_ptr<PTMaterial> MaterialsBaker::ImportFromDonut(donut::engine::Mater
+             materialPT->ThinSurface = irisEx->IrisThinSurface;
+             if (irisEx->IrisIoR > 1.0f)
+                 materialPT->IoR = irisEx->IrisIoR;
++            if (irisEx->IrisIgnoreMeshTangentSpace)
++                materialPT->IgnoreMeshTangentSpace = true;
+         }
+     }
+ 
+diff --git a/Rtxpt/Materials/MaterialsBaker.h b/Rtxpt/Materials/MaterialsBaker.h
+index 7a29e08..47f5935 100644
+--- a/Rtxpt/Materials/MaterialsBaker.h
++++ b/Rtxpt/Materials/MaterialsBaker.h
+@@ -233,6 +233,9 @@ struct MaterialEx : donut::engine::Material
+     bool  IrisHintsSet    = false;
+     bool  IrisThinSurface = true;    // 단면으로 볼 것인가 (PTMaterial::ThinSurface)
+     float IrisIoR         = 0.0f;    // 0 이면 미지정 — PTMaterial 기본값 1.5 를 둡니다
++    // `.irisb` 에 탄젠트가 없습니다. 노멀맵을 쓰려면 엔진이 UV 미분에서
++    // 만들어야 합니다.
++    bool  IrisIgnoreMeshTangentSpace = false;
+ };
+ 
+ class MaterialsBaker

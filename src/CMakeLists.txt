@@ -74,6 +74,8 @@ if(TARGET donut_engine)
         iris/bridge/IrisBridge.cpp
         iris/bridge/HeightToNormal.h
         iris/bridge/HeightToNormal.cpp
+        iris/bridge/SurfaceGuess.h
+        iris/bridge/SurfaceGuess.cpp
     )
     target_include_directories(iris_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(iris_bridge PUBLIC iris_protocol donut_engine)
