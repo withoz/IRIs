@@ -403,6 +403,25 @@ module IRIS
         put(out, 'bump_type',        str(xml, 'BumpMapType'))
         out['solid_glass'] = true if str(xml, 'IsSolidGlass') == 'true'
 
+        # **범프는 그림을 따로 못 받아 옵니다.**
+        #
+        # Enscape 는 `<BumpTexture><Filepath>` 에 경로를 적어 두는데, 실측해
+        # 보니 **8개 중 8개가 열리지 않습니다**(iris_bump_probe.rb):
+        # 남의 컴퓨터의 네트워크 공유, 다른 사용자의 바탕화면, 임시 폴더.
+        # 그 경로를 읽는 배선은 놓아 봐야 아무것도 안 나옵니다.
+        #
+        # 그런데 **8개 중 8개가 디퓨즈와 같은 파일**이고, 그 그림은 SketchUp
+        # 이 .skp 안에 품고 있어 우리가 이미 PNG 로 내보내고 있습니다.
+        # 그래서 경로 대신 **"디퓨즈를 높이맵으로 쓰라"** 는 표시만 보냅니다.
+        bump = texture_path(xml, 'BumpTexture')
+        diff = texture_path(xml, 'DiffuseTexture')
+        if bump
+          out['bump_from_diffuse'] = (diff && bump == diff) ? true : false
+          out['bump_inverted']     = true if texture_inverted(xml, 'BumpTexture')
+          # 경로는 진단용으로만 남깁니다 — 우리는 열지 않습니다.
+          out['bump_file'] = bump
+        end
+
         # 발광. EmissiveStrength 는 cd/m^2 로 봅니다 — 천장 패널의 3000~7000 이
         # 실제 LED 패널 휘도(3000~8000 nit)와 맞습니다.
         es = num(xml, 'EmissiveStrength')
@@ -420,6 +439,28 @@ module IRIS
       end
 
       # ---------------------------------------------------------------- 공통
+
+      # <BumpTexture><Filepath>..</Filepath>..</BumpTexture> 에서 경로만.
+      def texture_path(xml, tag)
+        block = xml[%r{<#{tag}>(.*?)</#{tag}>}m]
+        return nil unless block
+        inner = Regexp.last_match(1)
+        return nil unless inner[%r{<Filepath>([^<]*)</Filepath>}]
+        v = Regexp.last_match(1).to_s
+        v.empty? ? nil : v
+      rescue StandardError
+        nil
+      end
+
+      def texture_inverted(xml, tag)
+        block = xml[%r{<#{tag}>(.*?)</#{tag}>}m]
+        return false unless block
+        inner = Regexp.last_match(1)
+        inner[%r{<IsInverted>([^<]*)</IsInverted>}] &&
+          Regexp.last_match(1).to_s.strip == 'true'
+      rescue StandardError
+        false
+      end
 
       def dict_value(owner, dict_name, key)
         d = owner.attribute_dictionary(dict_name)

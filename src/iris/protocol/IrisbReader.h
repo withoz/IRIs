@@ -180,6 +180,25 @@ namespace iris::protocol
         float bump      = 0.0f;
         float normalIntensity = 0.0f;
         std::string bumpType;           // UNDEFINED / BUMP / DISPLACEMENT / NORMAL
+
+        // **범프 그림은 경로로 못 받습니다.**
+        //
+        // Enscape 는 `<BumpTexture><Filepath>` 에 경로를 적지만 실측 결과
+        // **8개 중 8개가 열리지 않았습니다** — 남의 컴퓨터의 네트워크 공유,
+        // 다른 사용자의 바탕화면, 임시 폴더(iris_bump_probe.rb, 골프존 모델).
+        //
+        // 대신 **8개 중 8개가 디퓨즈와 같은 파일**이었고 그 그림은 .skp 안에
+        // 있어 우리가 이미 PNG 로 내보냅니다. 그래서 경로가 아니라
+        // "디퓨즈를 높이맵으로 써라"는 표시만 옵니다.
+        bool  bumpFromDiffuse = false;
+        bool  bumpInverted    = false;
+        std::string bumpFile;           // 진단용. 우리는 열지 않습니다
+
+        // 범프를 낼 수 있는가. 세기가 있고, 쓸 그림이 있어야 합니다.
+        [[nodiscard]] bool HasBump() const
+        {
+            return bump > 0.0f && bumpFromDiffuse;
+        }
         bool  solidGlass = false;
 
         // 발광. cd/m^2 로 해석합니다 — 천장 패널의 3000~7000 이 실제 LED

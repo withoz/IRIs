@@ -71,6 +71,10 @@ module IRIS
             inv:    bt && bt[:inverted],
             same:   (bt && dt && bt[:path] == dt[:path]),
             exists: bt && bt[:path] && File.exist?(bt[:path]),
+            # **결정적인 칸.** Enscape 가 적어 둔 경로는 남의 컴퓨터·임시
+            # 폴더라 거의 안 열립니다. 그런데 범프가 디퓨즈와 같은 파일이면
+            # 그 그림은 .skp 안에 있고 우리가 이미 내보내고 있습니다.
+            sutex:  !(m.texture rescue nil).nil?,
           }
         end
 
@@ -80,14 +84,15 @@ module IRIS
         if rows.empty?
           say '    없습니다.'
         else
-          say format('    %-24s %7s %7s %7s %-14s %6s %6s %6s',
-                     '이름', '면', '범프', '노멀세기', '종류', '디퓨즈와같음', '파일있음', '반전')
+          say format('    %-24s %7s %7s %-13s %5s %5s %5s %5s',
+                     '이름', '면', '범프', '종류', '디퓨즈같음', '파일있음', 'SU텍스처', '반전')
           rows.sort_by { |r| -r[:faces] }.each do |r|
-            say format('    %-24s %7d %7.3f %7.3f %-14s %6s %6s %6s',
-                       clip(r[:name], 24), r[:faces], r[:amount], r[:nmi],
-                       clip(r[:type], 14),
+            say format('    %-24s %7d %7.3f %-13s %5s %5s %5s %5s',
+                       clip(r[:name], 24), r[:faces], r[:amount],
+                       clip(r[:type], 13),
                        r[:same].nil? ? '-' : (r[:same] ? 'O' : 'X'),
-                       r[:exists].nil? ? '-' : (r[:exists] ? 'O' : '**X**'),
+                       r[:exists].nil? ? '-' : (r[:exists] ? 'O' : 'X'),
+                       r[:sutex] ? 'O' : '**X**',
                        r[:inv].nil? ? '-' : (r[:inv] ? 'O' : 'X'))
           end
         end
@@ -111,8 +116,11 @@ module IRIS
           say format('    %-20s %s', clip(r[:name], 20), clip(r[:bpath].to_s, 72))
         end
         say ''
-        say '  읽는 법 — 파일있음이 **X** 면 경로만 남고 그림이 없는 것입니다.'
-        say '            Enscape 가 임시 폴더에 풀어 두고 지운 경우입니다.'
+        say '  읽는 법'
+        say '    파일있음 X  — Enscape 가 적어 둔 경로에 그림이 없습니다(남의 컴퓨터·임시 폴더).'
+        say '    디퓨즈같음 O + SU텍스처 O  — **그 그림은 .skp 안에 있습니다.** 우리가'
+        say '                                 이미 내보내는 PNG 를 높이맵으로 쓰면 됩니다.'
+        say '    SU텍스처 **X**            — 쓸 그림이 아예 없습니다. 이 재질은 범프를 못 냅니다.'
         finish(out_dir)
       rescue StandardError => e
         say ''

@@ -368,6 +368,27 @@ int main(int argc, char** argv)
         }
     }
 
+    // --- 범프: 쓸 그림이 있을 때만 냅니다 (합성 배선 씬에 있을 때만) ---
+    //
+    // Enscape 가 적어 둔 BumpTexture 경로는 실측 8개 중 8개가 열리지
+    // 않았습니다. 세기만 보고 범프를 내면 **그림 없는 범프**가 생깁니다.
+    for (const auto& m : scene.materials)
+    {
+        if (m.id == "mat_grass")
+        {
+            Check(m.pbr.bump > 0.6f,        "mat_grass: 범프 세기를 읽었다");
+            Check(m.pbr.bumpFromDiffuse,    "mat_grass: 디퓨즈를 높이맵으로 쓰라고 읽었다");
+            Check(m.pbr.HasBump(),          "mat_grass: 범프를 낼 수 있다");
+            Check(m.pbr.bumpType == "DISPLACEMENT", "mat_grass: 종류를 읽었다");
+        }
+        else if (m.id == "mat_bump_orphan")
+        {
+            Check(m.pbr.bump > 2.9f,        "mat_bump_orphan: 범프 세기는 있다");
+            Check(!m.pbr.bumpFromDiffuse,   "mat_bump_orphan: 쓸 그림이 없다고 읽었다");
+            Check(!m.pbr.HasBump(),         "mat_bump_orphan: **범프를 내면 안 된다**");
+        }
+    }
+
     // --- 알파 테스트 판정 (순수 논리라 파일이 필요 없습니다) ---
     //
     // 여기서 틀리면 나뭇잎·타공판의 구멍이 막히거나(끄는 쪽으로 틀림),

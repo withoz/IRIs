@@ -191,6 +191,50 @@ def build():
             },
         },
 
+        # --- 범프 두 가지 ------------------------------------------------
+        #
+        # Enscape 가 적어 둔 BumpTexture 경로는 실측 결과 8개 중 8개가
+        # 열리지 않았습니다(남의 컴퓨터·임시 폴더). 대신 8개 중 8개가
+        # 디퓨즈와 같은 파일이어서, 우리가 이미 내보내는 PNG 를 높이맵으로
+        # 씁니다. 그 표시가 실제로 건너오는지 여기서 못박습니다(11번 (d)).
+        {
+            "id": "mat_grass",
+            "name": "grass (디퓨즈를 높이맵으로)",
+            "color": [1.0, 1.0, 1.0],
+            "alpha": 1.0,
+            "type": 1,
+            "texture": {
+                "file": "grass.png", "export": "textures/mat_grass.png",
+                "width_m": 0.5, "height_m": 0.47, "pixels": [512, 512],
+                "alpha": {"channel": False},
+            },
+            "pbr": {
+                "etype": "GENERIC", "roughness": 0.9, "metalness": 0.0,
+                "specular": 0.5,
+                "bump": 0.6371948345744187,     # 골프존 '재질16' 실측값
+                "bump_type": "DISPLACEMENT",
+                "bump_from_diffuse": True,
+                "bump_file": "C:/Users/User/AppData/Local/Temp/잔디-색상변경-1(1).jpg",
+            },
+        },
+        {
+            "id": "mat_bump_orphan",
+            "name": "bump but no usable image",
+            "color": [0.6, 0.6, 0.6],
+            "alpha": 1.0,
+            "type": 0,
+            "texture": None,
+            # 세기는 있는데 쓸 그림이 없습니다 — 범프를 내면 안 됩니다.
+            "pbr": {
+                "etype": "GENERIC", "roughness": 0.8, "metalness": 0.0,
+                "specular": 0.5,
+                "bump": 3.0,
+                "bump_type": "BUMP",
+                "bump_from_diffuse": False,
+                "bump_file": r"\\192.168.10.100\sla_data\gone.png",
+            },
+        },
+
         # --- 텍스처 알파 세 가지 ---------------------------------------
         #
         # 컷아웃(나뭇잎·타공판)의 구멍은 재질 알파가 아니라 **텍스처의 알파

@@ -537,6 +537,9 @@ namespace iris::protocol
                 pbr.bump      = GetFloat(pv, "bump", 0.0f);
                 pbr.normalIntensity = GetFloat(pv, "normal_intensity", 0.0f);
                 pbr.bumpType  = GetString(pv, "bump_type");
+                pbr.bumpFromDiffuse = GetBool(pv, "bump_from_diffuse");
+                pbr.bumpInverted    = GetBool(pv, "bump_inverted");
+                pbr.bumpFile        = GetString(pv, "bump_file");
                 pbr.solidGlass = GetBool(pv, "solid_glass");
 
                 const float cd = GetFloat(pv, "emissive_cd", 0.0f);
