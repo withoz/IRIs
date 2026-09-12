@@ -73,6 +73,8 @@ namespace iris::bridge
         size_t   thinGlass          = 0;  // 단면으로 본 유리 (ThinSurface)
         size_t   solidGlass         = 0;  // 두께 있는 덩어리로 본 유리 (Enscape 지정)
         size_t   authorIor          = 0;  // Enscape 굴절률을 쓴 재질
+        size_t   bumpMaterials      = 0;  // 높이맵에서 구운 노멀맵을 쓴 재질
+        size_t   bumpSkipped        = 0;  // 범프 세기는 있는데 쓸 그림이 없던 것
         double   lightLumens    = 0.0;    // 광원 총 광속. 노출 감각용
         uint64_t triangles   = 0;
         uint64_t vertices    = 0;
@@ -114,8 +116,11 @@ namespace iris::bridge
         // 로드할 때마다 비워집니다.** 라이브 갱신에서는 같은 텍스처를 매번 다시
         // 디코드하게 되므로(실측 구축 656 ms 중 638 ms), 호출자가 프로세스
         // 수명 캐시를 끼워 넣을 수 있어야 합니다.
+        // ⚠ `sRGB` 를 반드시 넘기십시오. 색 텍스처는 sRGB 이고 **노멀맵은
+        //   선형**입니다. 섞으면 범프가 엉뚱한 방향으로 눕습니다.
         using TextureLoader =
-            std::function<std::shared_ptr<donut::engine::LoadedTexture>(const std::filesystem::path&)>;
+            std::function<std::shared_ptr<donut::engine::LoadedTexture>(
+                const std::filesystem::path&, bool /*sRGB*/)>;
         void SetTextureLoader(TextureLoader loader) { m_textureLoader = std::move(loader); }
 
         // **재질 상속** — SketchUp 에서 면에 재질이 없으면 상위 인스턴스의 재질을
@@ -157,6 +162,12 @@ namespace iris::bridge
         {
             bool  thinSurface = true;    // 단면으로 볼 것인가
             float ior         = 0.0f;    // 0 이면 미지정 — 엔진 기본값(1.5)을 둡니다
+
+            // **탄젠트를 안 보냅니다.** `.irisb` 에는 위치·법선·UV·인덱스만
+            // 들어 있습니다. 노멀맵을 쓰려면 엔진이 UV 미분에서 탄젠트를
+            // 만들어야 합니다(PTMaterial::IgnoreMeshTangentSpace).
+            // 정점에 탄젠트를 싣는 것보다 싸고 전송량도 안 늘어납니다.
+            bool  ignoreMeshTangentSpace = false;
         };
         using MaterialHintApplier =
             std::function<void(donut::engine::Material&, const MaterialHints&)>;
@@ -275,6 +286,11 @@ namespace iris::bridge
         // **Enscape 값이 없을 때** 유리를 단면으로 볼 것인가 — 11번 (b).
         // Enscape 가 IsSolidGlass 를 말했으면 그 값이 이깁니다.
         void SetGlassThinDefault(bool thin) { m_glassThinDefault = thin; }
+
+        // 범프 세기 배율. Enscape 의 BumpAmount(0.1~3.0)를 엔진의
+        // normalTextureScale 로 옮길 때 곱합니다 — 대응은 **가정**이라
+        // 밖으로 뺐습니다(11번 (d)).
+        void SetBumpStrength(float k) { m_bumpStrength = (k < 0.0f) ? 0.0f : k; }
         [[nodiscard]] bool AreaLightGeometry() const { return m_areaLightGeometry; }
 
         // baseDir 은 텍스처 상대경로의 기준입니다 (.irisb 가 있던 디렉터리).
@@ -316,6 +332,7 @@ namespace iris::bridge
         float m_glassRoughness    = 0.05f;
         bool  m_alphaCutout       = false;
         bool  m_glassThinDefault  = true;
+        float m_bumpStrength      = 1.0f;
         // 저장된 재질 덮어쓰기를 모델별로 가르는 키. BuildMaterials 가 채웁니다.
         std::string m_modelKey;
         IesApplier m_iesApplier;

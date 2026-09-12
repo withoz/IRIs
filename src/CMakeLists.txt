@@ -72,9 +72,24 @@ if(TARGET donut_engine)
         iris/bridge/SceneBuilder.cpp
         iris/bridge/IrisBridge.h
         iris/bridge/IrisBridge.cpp
+        iris/bridge/HeightToNormal.h
+        iris/bridge/HeightToNormal.cpp
     )
     target_include_directories(iris_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(iris_bridge PUBLIC iris_protocol donut_engine)
+
+    # stb — 높이맵을 노멀맵으로 구울 때 PNG 를 읽고 씁니다.
+    #
+    # **구현은 가져오지 않습니다.** Donut 이 이미 컴파일해 두었고
+    # (External/Donut/src/engine/stb_impl.c) donut_engine 안에 심볼이
+    # 있습니다. 여기서는 헤더 경로만 필요합니다 — stb 는 INTERFACE 타깃이라
+    # 링크해도 붙는 것이 없습니다.
+    if(TARGET stb)
+        target_link_libraries(iris_bridge PRIVATE stb)
+    else()
+        message(FATAL_ERROR
+            "IRIS: stb 타깃이 없습니다. 엔진 트리 안에서 빌드하는 것이 맞습니까?")
+    endif()
     if(MSVC)
         target_compile_options(iris_bridge PRIVATE -utf-8 ${IRIS_WARNING_FLAGS})
     endif()

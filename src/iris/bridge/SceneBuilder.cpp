@@ -1,6 +1,7 @@
 #include "SceneBuilder.h"
 
 #include "iris/protocol/IrisbReader.h"
+#include "HeightToNormal.h"
 
 #include <donut/core/math/math.h>
 #include <json/json.h>
@@ -216,6 +217,10 @@ namespace iris::bridge
             m->name          = ToNativeNarrow(sm.name.empty() ? sm.id : sm.name);
             m->modelFileName = modelKey;
 
+            // Donut 머티리얼에 칸이 없는 값들. 아래에서 채워서 재질 하나를
+            // 다 정한 뒤 한 번에 넘깁니다.
+            MaterialHints hints;
+
             const bool hasTexture = sm.hasTexture && !sm.texture.exportPath.empty();
             const bool ePbr       = sm.pbr.present;
 
@@ -329,7 +334,6 @@ namespace iris::bridge
                 //   탁자처럼 진짜 두께가 있는 물건은 이 기본값이 틀립니다 —
                 //   그때는 Enscape 에서 `IsSolidGlass` 를 켜야 합니다.
                 //   (등급: **가정**. 모델 통계로 확인한 적은 없습니다.)
-                MaterialHints hints;
                 //
                 // Enscape 가 말했으면 그 값이 이깁니다 — `false` 도 저작자의
                 // 답입니다. 아무 말이 없을 때만 설정값을 씁니다.
@@ -346,8 +350,6 @@ namespace iris::bridge
                     hints.ior = sm.pbr.ior;
                     ++stats.authorIor;
                 }
-                if (m_applyMaterialHints)
-                    m_applyMaterialHints(*m, hints);
             }
             else if (alpha < 0.999f)
             {
@@ -391,15 +393,57 @@ namespace iris::bridge
                 {
                     // 색상 텍스처이므로 sRGB 입니다.
                     m->baseOrDiffuseTexture =
-                        m_textureLoader ? m_textureLoader(p)
+                        m_textureLoader ? m_textureLoader(p, true)
                                         : m_textureCache->LoadTextureFromFileDeferred(p, true);
                     ++stats.textures;
+
+                    // **범프.** Enscape 가 적어 둔 BumpTexture 경로는 실측
+                    // 8개 중 8개가 열리지 않았습니다(남의 컴퓨터·임시 폴더).
+                    // 대신 8개 중 8개가 디퓨즈와 같은 파일이었으므로, 방금
+                    // 읽은 이 PNG 를 높이맵으로 보고 노멀맵을 굽습니다
+                    // (11번 (d), HeightToNormal.h).
+                    if (ePbr && sm.pbr.HasBump())
+                    {
+                        std::string err;
+                        const std::filesystem::path nrm =
+                            MakeNormalMap(p, sm.pbr.bumpInverted, &err);
+                        if (!nrm.empty())
+                        {
+                            // **노멀맵은 선형입니다.** sRGB 로 읽으면 기울기가
+                            // 비선형으로 휘어 엉뚱한 방향으로 눕습니다.
+                            m->normalTexture =
+                                m_textureLoader ? m_textureLoader(nrm, false)
+                                                : m_textureCache->LoadTextureFromFileDeferred(nrm, false);
+
+                            // Enscape 의 BumpAmount 는 0.1~3.0 입니다. 최대값이
+                            // 1.0 이 되도록 옮기고 설정으로 한 번 더 곱합니다.
+                            // 대응은 **가정** 이라 화면으로 맞춰야 합니다.
+                            const float k = (sm.pbr.bump / 3.0f) * m_bumpStrength;
+                            m->normalTextureScale = (k < 0.0f) ? 0.0f : (k > 4.0f ? 4.0f : k);
+                            hints.ignoreMeshTangentSpace = true;
+                            ++stats.bumpMaterials;
+                        }
+                        else
+                        {
+                            stats.warnings.push_back("노멀맵을 못 만들었습니다: " + err);
+                        }
+                    }
                 }
                 else
                 {
                     stats.warnings.push_back("텍스처를 찾지 못했습니다: " + sm.texture.exportPath);
                 }
             }
+            else if (ePbr && sm.pbr.bump > 0.0f && !sm.pbr.HasBump())
+            {
+                // 세기는 있는데 쓸 그림이 없습니다. 세어만 둡니다 —
+                // 그림 없는 범프를 내면 안 됩니다.
+                ++stats.bumpSkipped;
+            }
+
+            // 힌트는 재질을 다 정한 뒤 한 번에 넘깁니다.
+            if (m_applyMaterialHints)
+                m_applyMaterialHints(*m, hints);
 
             m_materials.emplace(sm.id, std::move(m));
         }
