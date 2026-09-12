@@ -1,0 +1,316 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 18:03:28 +0900
+Subject: [PATCH 39/39] =?UTF-8?q?fix(iris):=20=EC=9E=AC=EC=A7=88=EA=B3=BC?=
+ =?UTF-8?q?=20=EC=A1=B0=EB=AA=85=EC=9D=84=20=EA=B0=88=EB=9D=BC=20=EB=86=93?=
+ =?UTF-8?q?=EC=8A=B5=EB=8B=88=EB=8B=A4=20=E2=80=94=20=EA=B4=91=EC=9B=90?=
+ =?UTF-8?q?=EC=9D=84=20=EB=B2=BD=EC=9C=BC=EB=A1=9C=20=EA=B7=B8=EB=A6=AC?=
+ =?UTF-8?q?=EA=B3=A0=20=EC=9E=88=EC=97=88=EC=8A=B5=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+호스트는 둘을 이미 구분해 놓았는데 우리가 섞고 있었습니다.
+
+  재질(자체발광)  눈에 보이는 빛나는 표면. 저작자가 모델링한 것입니다 —
+                  코브 띠, 시뮬레이터 스크린, 간판. 우리가 그립니다.
+  조명(Enscape)   빛만 내는 장치. Enscape 는 절대 그리지 않습니다.
+
+## 사용자가 화면을 보고 짚었습니다
+
+"스케치업에서 엔스케이프 조명이 가려져 있는데 조명을 벽으로 표현하고
+있어요." 선택해 주신 것을 읽으니:
+
+  Enscape.RectangularLight  3.0 x 2.45 m (7.35 m²) · 2,831.6 lm
+                            radiance 122.65 cd/m² · hidden=false
+
+이런 것이 4개. 골프 시뮬레이터 스크린 **바로 앞**에 놓여 있어, 발광
+사각형으로 바꾸는 순간 스크린을 통째로 덮었습니다. Enscape 화면에는
+골프 코스 영상이 나오고 우리 화면에는 회색 판이었습니다.
+
+7.35 m² 짜리 조명 기구는 건축에 없습니다. 저것은 기구가 아니라
+스크린을 빛나게 하려고 놓은 장치이고, 스크린은 이미 모델에 있습니다.
+
+## SkipRender 로는 못 고칩니다
+
+"빛은 내되 안 그리기" 를 PTMaterial::SkipRender 로 해 보려 했는데
+됩니다가 아니었습니다. 헤더 주석이 "hidden emissives 에도 쓸 수 있다"
+고 적어 두었지만 실제로는 둘 다 죽습니다:
+
+  AccelerationStructureUtil.h:64   지오메트리에서 제외  (원하던 것)
+  LightsBaker.cpp:875              발광도 건너뜀        (원하지 않던 것)
+
+그대로 넣었으면 스크린은 살아나고 조명은 사라졌을 것입니다.
+
+## 고침
+
+area_light_geometry 기본값을 **끔**으로 바꿉니다. 사각·선형 광원은
+분석 광원(88도 원뿔 + 등가 면적 구면)으로 갑니다 — Enscape 와 같이
+보이지 않습니다.
+
+설정은 남겨 둡니다. 기구를 모델링하지 않은 모델에서는 켜는 쪽이
+나을 수 있습니다(09번 8-f). 예전 근거는 우리 두 선택지끼리 견준
+것이었고, 이제 Enscape 라는 기준이 생겼습니다.
+
+## 확인 — 빛을 하나도 잃지 않았습니다
+
+설정 파일에서 그 칸을 **지우고**(코드 기본값이 답하도록) 다시 받았습니다.
+
+  이전  면광원 5 · 스포트 43 · 총 광속 2,156,588 lm
+  지금  면광원 0 · 스포트 48 · 총 광속 2,156,588 lm
+
+총 광속이 한 자리도 다르지 않습니다. 지오메트리에서 분석 광원으로
+옮겨 갔을 뿐입니다. 화면에서 스크린이 그대로 나옵니다
+(out/rtxpt/IRIS_vs_Enscape_3.png).
+
+## 같이 들어간 것 — 발광 텍스처 (11번 5번 e)
+
+Enscape 의 SELF_ILLUMINATED 재질은 발광 세기와 디퓨즈 텍스처를 둘 다
+갖습니다. 우리는 발광을 균일한 색으로만 내서 43 m² 스크린이 밑의 그림을
+씻어 버렸습니다. emissiveTexture = baseOrDiffuseTexture 로 겁니다.
+
+  IRIS: 발광 — 재질 6개 · 그중 그림째로 빛나는 것 3개
+
+척도는 **가정**입니다 — Enscape 의 EmissiveStrength 가 흰 픽셀의
+휘도인지 판 전체의 평균인지 문서가 없습니다. 앞의 것으로 봤습니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp           |  2 +
+ Rtxpt/Iris/IrisSettings.h          | 15 +++++-
+ Rtxpt/Materials/MaterialsBaker.cpp | 85 +++++++++++++++++++++++-------
+ Rtxpt/Materials/MaterialsBaker.h   | 14 +++++
+ Rtxpt/SampleUI.cpp                 | 15 +++++-
+ 5 files changed, 109 insertions(+), 22 deletions(-)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index a139c24..068d80f 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -423,6 +423,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+     log::info("IRIS: 조명 — 점 %zu · 스포트 %zu · 총 광속 %.0f lm · 발광 재질 %zu · Specular 지정 %zu",
+               stats.pointLights, stats.spotLights, stats.lightLumens,
+               stats.emissiveMaterials, stats.specularOverrides);
++    log::info("IRIS: 발광 — 재질 %zu개 · 그중 그림째로 빛나는 것 %zu개",
++              stats.emissiveMaterials, stats.emissiveTextures);
+     if (stats.hasSun && stats.sunIrradiance <= 0.0f)
+         log::info("IRIS: 태양 — 하늘이 소유 (고도 %.1f도, 방향 %.3f %.3f %.3f)",
+                   stats.sunElevationDeg, stats.sunDirYUp[0], stats.sunDirYUp[1], stats.sunDirYUp[2]);
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+index d6aad17..2f32282 100644
+--- a/Rtxpt/Iris/IrisSettings.h
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -51,7 +51,20 @@ namespace iris
+         //
+         // 둘 다 **씬을 다시 받아야** 적용됩니다 — 씬 그래프를 만들 때
+         // 정해지기 때문입니다.
+-        bool areaLightGeometry = true;   // 사각·선형을 발광 사각형으로 (09번 8-f)
++        // **사각·선형 광원을 발광 사각형으로 그릴 것인가. 기본은 아니오.**
++        //
++        // 호스트는 재질과 조명을 이미 갈라 놓았습니다. 자체발광 **재질**은
++        // 저작자가 모델링한 "보이는 빛나는 표면"이고(코브 띠·스크린·간판),
++        // Enscape **광원 객체**는 빛만 내는 장치입니다. Enscape 는 후자를
++        // 절대 그리지 않습니다.
++        //
++        // 켜면 광원이 눈에 보이는 사각형이 되고 **뒤를 가립니다.** 골프존
++        // 모델에서 3.0 x 2.45 m 사각 광원 4개가 골프 시뮬레이터 스크린을
++        // 통째로 덮었습니다(SceneBuilder.h 의 SetAreaLightGeometry 주석).
++        //
++        // 기구를 모델링하지 않은 모델에서는 켜는 쪽이 나을 수 있습니다
++        // (09번 8-f). 그때만 켜십시오. **씬을 다시 받아야** 적용됩니다.
++        bool areaLightGeometry = false;
+         bool iesProfiles       = true;   // IES 배광을 텍스처로 (09번 8-g)
+ 
+         // --------------------------------------------------------- 유리
+diff --git a/Rtxpt/Materials/MaterialsBaker.cpp b/Rtxpt/Materials/MaterialsBaker.cpp
+index 05fa4c3..8e52b43 100644
+--- a/Rtxpt/Materials/MaterialsBaker.cpp
++++ b/Rtxpt/Materials/MaterialsBaker.cpp
+@@ -592,8 +592,11 @@ void PTMaterial::FillData(PTMaterialData & data)
+ 
+ std::filesystem::path MaterialsBaker::GetMaterialStoragePath(PTMaterialBase& material)
+ {
+-    std::filesystem::path matPath = m_materialsPath;
+-    if (!material.SharedWithAllScenes)
++    // IRIS: 라이브 씬이면 엔진 트리 밖에 씁니다. 파일 이름에 ModelName 이
++    // 이미 붙으므로 씬별 하위 폴더는 따로 두지 않습니다.
++    std::filesystem::path matPath = m_irisOverrideRoot.empty() ? m_materialsPath
++                                                               : m_irisOverrideRoot;
++    if (m_irisOverrideRoot.empty() && !material.SharedWithAllScenes)
+         matPath = m_materialsSceneSpecializedPath;
+     std::string fileName = material.Name + c_MaterialsExtension;
+     if (material.ModelName != kNoModel)
+@@ -728,12 +731,20 @@ std::shared_ptr<PTMaterial> MaterialsBaker::Load(const std::string & modelFileNa
+ {
+     std::string modelName = ModelNameFromModelFileName(modelFileName);
+ 
+-    std::array<std::filesystem::path, 4> candidates;
+-
+-    candidates[0] = m_materialsSceneSpecializedPath / (modelName + "." + name + c_MaterialsExtension);
+-    candidates[1] = m_materialsSceneSpecializedPath / (name + c_MaterialsExtension);
+-    candidates[2] = m_materialsPath                 / (modelName + "." + name + c_MaterialsExtension);
+-    candidates[3] = m_materialsPath                 / (name + c_MaterialsExtension);
++    // IRIS: 후보 앞에 **엔진 트리 밖의 새 위치**를 둡니다. 옛 위치
++    // (Assets/Materials)도 계속 봅니다 — 이미 저장해 둔 편집을 잃지 않기
++    // 위해서입니다. 새로 쓰는 것은 항상 새 위치입니다.
++    std::array<std::filesystem::path, 6> candidates;
++
++    const std::filesystem::path irisRoot = m_irisOverrideRoot;
++    candidates[0] = irisRoot.empty() ? std::filesystem::path()
++                                     : irisRoot / (modelName + "." + name + c_MaterialsExtension);
++    candidates[1] = irisRoot.empty() ? std::filesystem::path()
++                                     : irisRoot / (name + c_MaterialsExtension);
++    candidates[2] = m_materialsSceneSpecializedPath / (modelName + "." + name + c_MaterialsExtension);
++    candidates[3] = m_materialsSceneSpecializedPath / (name + c_MaterialsExtension);
++    candidates[4] = m_materialsPath                 / (modelName + "." + name + c_MaterialsExtension);
++    candidates[5] = m_materialsPath                 / (name + c_MaterialsExtension);
+ 
+     Json::Value rootJ;
+     std::string actualLoadedFileName;
+@@ -741,11 +752,15 @@ std::shared_ptr<PTMaterial> MaterialsBaker::Load(const std::string & modelFileNa
+     for ( int i = 0; i < candidates.size(); i++ )
+     {
+         auto & candidate = candidates[i];
++        if (candidate.empty())      // IRIS 뿌리가 없으면 앞의 둘은 비어 있습니다
++            continue;
+         if (std::filesystem::exists(candidate))
+             if (LoadJsonFromFile(candidate, rootJ))
+             {
+-                actualLoadedFileName = candidate.string(); 
+-                shared = i >= 2;
++                actualLoadedFileName = candidate.string();
++                // 씬 전용 폴더(2,3)만 shared 가 아닙니다. IRIS 뿌리(0,1)는
++                // 이름에 ModelName 이 붙으므로 공유로 둡니다.
++                shared = !(i == 2 || i == 3);
+                 if (i%2==1)
+                     modelName = kNoModel;
+                 break;
+@@ -927,11 +942,41 @@ void MaterialsBaker::CreateRenderPassesAndLoadMaterials(nvrhi::IBindingLayout* b
+                 if (loaded != nullptr)
+                 {
+                     // IRIS: 이 한 줄이 **호스트가 보낸 값을 통째로 버립니다** —
+-                    // 색·거칠기·투과·도메인·텍스처까지 전부 파일 것으로 바뀝니다.
++                    // 색·거칠기·투과·도메인까지 전부 파일 것으로 바뀝니다.
+                     // 라이브 링크에서는 사용자가 SketchUp 에서 아무리 고쳐도
+                     // 화면이 안 바뀌는 것으로 보입니다. 조용하면 안 됩니다.
+                     ++loadedFromFileCount;
+                     materialEx->PTMaterial = loaded;
++
++                    // **텍스처만은 호스트 것을 씁니다** (10번 10.5-7).
++                    //
++                    // 저장 파일은 텍스처 경로를 박아 둡니다. 우리 내보내기
++                    // 이름은 `mat_<entityID>.png` 인데 **entityID 는 모델을
++                    // 다시 열면 다시 매겨집니다.** 그러면 저장해 둔 값이
++                    // 엉뚱한 재질의 그림을 가리키고, 오류 없이 화면만
++                    // 틀립니다 — 이 프로젝트에서 가장 싫어하는 실패입니다.
++                    //
++                    // 소유권으로 가르는 것이 맞습니다. **그림은 호스트가,
++                    // 겉모습 값은 사용자가** 가집니다. 사용자가 편집기에서
++                    // 끈 Enable*Texture 깃발은 파일 것을 그대로 둡니다 —
++                    // 그건 경로가 아니라 의도입니다.
++                    //
++                    // ⚠ **IRIS 씬에서만** 합니다. RTXPT 예제 씬의 저장 파일은
++                    //   그 자체가 재질 정의이고 텍스처 경로가 정답입니다 —
++                    //   거기서 이걸 하면 예제가 망가집니다. 뿌리가 채워져
++                    //   있다는 것이 곧 "라이브 씬" 입니다.
++                    if (!m_irisOverrideRoot.empty())
++                    {
++                        const std::shared_ptr<PTMaterial> host = ImportFromDonut(*material);
++                        if (host != nullptr)
++                        {
++                            loaded->BaseTexture                       = host->BaseTexture;
++                            loaded->OcclusionRoughnessMetallicTexture  = host->OcclusionRoughnessMetallicTexture;
++                            loaded->NormalTexture                      = host->NormalTexture;
++                            loaded->EmissiveTexture                    = host->EmissiveTexture;
++                            loaded->TransmissionTexture                = host->TransmissionTexture;
++                        }
++                    }
+                 }
+                 else // ...and if we didn't find it in our .scene.materials.json, then import from Donut!
+                 {
+@@ -1195,15 +1240,17 @@ bool MaterialsBaker::LoadSingle(PTMaterialBase & material)
+ 
+ bool MaterialsBaker::SaveSingle(PTMaterialBase & material)
+ {
+-    if (!EnsureDirectoryExists(m_materialsPath))
+-        return false;
+-    std::filesystem::path outPath = m_materialsPath;
+-    if (!material.SharedWithAllScenes)
+-        outPath = m_materialsSceneSpecializedPath;
+-    if (!EnsureDirectoryExists(outPath))
+-
+     assert( material.ModelName != "" && material.Name != "" );
+-    outPath = GetMaterialStoragePath(material);
++
++    // IRIS: **실제 목적지의 폴더**를 만듭니다.
++    //
++    // 원본은 m_materialsPath 만 만들고, 그 다음 `if (!EnsureDirectoryExists(
++    // outPath))` 에 본문이 없어 아무 일도 하지 않았습니다. 엔진 기본 경로는
++    // 이미 존재해서 드러나지 않던 자리인데, 덮어쓰기를 엔진 트리 밖으로
++    // 옮기면 그 폴더는 처음엔 없습니다.
++    const std::filesystem::path outPath = GetMaterialStoragePath(material);
++    if (!EnsureDirectoryExists(outPath.parent_path()))
++        return false;
+ 
+     Json::Value rootJ;
+     //rootJ["RTXPTMaterialVersion"] = 1;
+diff --git a/Rtxpt/Materials/MaterialsBaker.h b/Rtxpt/Materials/MaterialsBaker.h
+index 47f5935..1ae55af 100644
+--- a/Rtxpt/Materials/MaterialsBaker.h
++++ b/Rtxpt/Materials/MaterialsBaker.h
+@@ -259,6 +259,19 @@ public:
+ 
+     void                            SceneReloaded();
+ 
++    // IRIS: **재질 덮어쓰기를 엔진 체크아웃 밖에 둡니다.**
++    //
++    // 기본 저장 위치는 `Assets/Materials/` — 엔진 소스 트리 안입니다.
++    // RTXPT 예제 씬에는 그것이 맞지만(497개가 거기 함께 배포됩니다),
++    // 라이브 링크 사용자의 편집이 거기 쌓이면 **엔진을 다시 받는 순간
++    // 통째로 날아갑니다**(10번 10.5-6).
++    //
++    // 비어 있으면 엔진 기본 동작 그대로입니다. IRIS 씬을 열 때만 채웁니다
++    // (Sample::SceneLoaded). 읽기는 새 위치와 옛 위치를 **둘 다** 봅니다 —
++    // 이미 저장해 둔 편집을 잃지 않기 위해서입니다.
++    void                            SetIrisOverrideRoot(const std::filesystem::path& p) { m_irisOverrideRoot = p; }
++    [[nodiscard]] const std::filesystem::path& IrisOverrideRoot() const { return m_irisOverrideRoot; }
++
+     std::filesystem::path           GetMaterialStoragePath(PTMaterialBase& material);
+ 
+     const std::shared_ptr<MaterialShaderPermutation> & 
+@@ -319,6 +332,7 @@ private:
+ 
+     std::filesystem::path           m_mediaPath;
+     std::filesystem::path           m_materialsPath;                    // usually "Assets/Materials/"              <- used for materials shared between all scenes
++    std::filesystem::path           m_irisOverrideRoot;                 // IRIS: 비어 있지 않으면 여기에 저장합니다 (엔진 트리 밖)
+     std::filesystem::path           m_materialsSceneSpecializedPath;    // usually "Assets/Materials/SceneName/"    <- used for materials specific to scene (not shared between scenes)
+ 
+     // this ClosestHit/AnyHit should work for all materials (ubershader, not efficient) - it will likely be removed in the future, with only the specialized supported
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index 191a4f9..4c353e2 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -635,10 +635,21 @@ void SampleUI::buildUI(void)
+ 
+             ImGui::SeparatorText("Light conversion");
+             // 둘 다 씬 그래프를 만들 때 정해집니다 — 지금 화면은 안 바뀝니다.
+-            if (ImGui::Checkbox("Area lights as emissive geometry", &s.areaLightGeometry))
++            if (ImGui::Checkbox("Draw area lights as visible quads", &s.areaLightGeometry))
+                 save = true;
+             if (ImGui::IsItemHovered())
+-                ImGui::SetTooltip("Rectangular and linear lights become emissive quads\ninstead of equal-area spheres.\n\nApplies on the next sync from SketchUp.");
++                ImGui::SetTooltip("Off by default, because Enscape never draws a light\n"
++                                  "object. What you see glowing in Enscape is an emissive\n"
++                                  "MATERIAL the author modelled - a cove strip, a screen,\n"
++                                  "a sign. Those we always draw.\n\n"
++                                  "Turning this on makes rectangular and linear lights\n"
++                                  "physically better (shape, elongation, cosine falloff)\n"
++                                  "but they become solid surfaces that HIDE whatever is\n"
++                                  "behind them. In the golf model, four 3.0 x 2.45 m rect\n"
++                                  "lights covered the simulator screens completely.\n\n"
++                                  "Turn it on for models where the luminaire itself was\n"
++                                  "never modelled.\n\n"
++                                  "Applies on the next sync from SketchUp.");
+             if (ImGui::Checkbox("IES photometric profiles", &s.iesProfiles))
+                 save = true;
+             if (ImGui::IsItemHovered())

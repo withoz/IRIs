@@ -424,6 +424,33 @@ namespace iris::bridge
                                         : m_textureCache->LoadTextureFromFileDeferred(p, true);
                     ++stats.textures;
 
+                    // **발광 재질에는 같은 그림을 발광 텍스처로도 겁니다** (11번 (e)).
+                    //
+                    // Enscape 의 `SELF_ILLUMINATED` 재질은 발광 세기와 디퓨즈
+                    // 텍스처를 **둘 다** 갖습니다. 발광을 균일한 색으로만 내면
+                    // 그 빛이 밑에 깔린 그림을 씻어 버립니다 — 골프존 모델의
+                    // 시뮬레이터 스크린(`재질1`, 43.5 m², 3,472 cd/m²)이
+                    // 우리 화면에서는 **평평한 회색 판**이었습니다. Enscape
+                    // 에서는 골프 코스 영상이 그림째로 빛납니다
+                    // (out/rtxpt/IRIS_vs_Enscape.png).
+                    //
+                    // 같은 LoadedTexture 를 다시 씁니다 — 한 번만 디코드합니다.
+                    //
+                    // ⚠ 척도는 **가정**입니다. Enscape 의 EmissiveStrength 가
+                    //   흰 픽셀의 휘도인지 판 전체의 평균인지 문서가 없습니다.
+                    //   여기서는 앞의 것으로 봅니다(텍스처를 곱합니다). 화면이
+                    //   Enscape 보다 어두우면 그 가정이 틀린 것입니다.
+                    //
+                    // ⚠ `emissiveIntensity` 로 판정하면 안 됩니다 — Donut 의
+                    //   기본값이 1.0 이라 **텍스처 있는 모든 재질**이 걸립니다.
+                    //   실제로 발광인지는 호스트가 말해 줍니다.
+                    if (ePbr && sm.pbr.hasEmissive && m->baseOrDiffuseTexture)
+                    {
+                        m->emissiveTexture       = m->baseOrDiffuseTexture;
+                        m->enableEmissiveTexture = true;
+                        ++stats.emissiveTextures;
+                    }
+
                     // **범프.** Enscape 가 적어 둔 BumpTexture 경로는 실측
                     // 8개 중 8개가 열리지 않았습니다(남의 컴퓨터·임시 폴더).
                     // 대신 8개 중 8개가 디퓨즈와 같은 파일이었으므로, 방금
@@ -942,9 +969,10 @@ namespace iris::bridge
         // (바로 아래), 이 근사는 그것을 껐을 때만 탑니다.
         const bool  area   = (spec.kind == Kind::Rect || spec.kind == Kind::Linear);
 
-        // 발광 지오메트리로 낼 수 있으면 그쪽이 물리적으로 맞습니다 — 모양도,
-        // 길쭉함도, 코사인 감쇠도. 켜는 이유와 근사의 한계는 SceneBuilder.h
-        // 의 SetAreaLightGeometry 주석.
+        // **기본은 그리지 않습니다.** Enscape 가 광원 프록시를 절대 그리지
+        // 않기 때문입니다 — 눈에 보이는 빛은 전부 자체발광 재질로 따로
+        // 모델링돼 있습니다. 켜면 물리적으로는 더 맞지만 뒤를 가립니다.
+        // 근거와 사고 경위는 SceneBuilder.h 의 SetAreaLightGeometry 주석.
         if (area && m_areaLightGeometry && BuildAreaLightGeometry(graph, node, spec, stats))
             return;
 
