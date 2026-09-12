@@ -283,6 +283,13 @@ namespace iris::bridge
         return m_server.IsRunning();
     }
 
+    void IrisBridge::ForgetLastScene()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_hasLastHash = false;
+        m_duplicates  = 0;
+    }
+
     bool IrisBridge::HasPendingScene() const
     {
         std::lock_guard<std::mutex> lock(m_mutex);
