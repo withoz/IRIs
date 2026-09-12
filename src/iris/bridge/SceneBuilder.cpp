@@ -341,7 +341,22 @@ namespace iris::bridge
             // 거의 항상 유리이고, AlphaBlended 로 두면 굴절도 반사도 없는
             // '유령'처럼 보입니다. 텍스처가 있는 반투명은 잎사귀 컷아웃일
             // 수 있어 그대로 둡니다.
-            const bool authorGlass = ePbr && (sm.pbr.solidGlass || sm.pbr.etype == "GLASS");
+            // ⚠ **`IsSolidGlass` 로 유리인지를 정하면 안 됩니다.**
+            //
+            // Enscape 에서 그 깃발과 `IndexOfRefraction` 은 **유리 재질 안에서만**
+            // 뜻이 있습니다. GENERIC 재질에도 값이 남아 있을 수 있고, 실제로
+            // 골프존 모델의 `[Translucent Glass Gray]6` 이 그렇습니다:
+            //
+            //     TypeV5 GENERIC · Opacity 0.458 · IsSolidGlass true · IoR 2.29
+            //
+            // 그걸 믿고 두께 있는 매질로 만들었더니 임계각이 약 26도라
+            // 대부분의 광선이 전반사하고, 거칠기 0.584 가 더해져 **뒤가 전혀
+            // 안 비치는 회색 판**이 됐습니다. Enscape 는 같은 값으로 뒤의
+            // 골프 스크린을 흐릿하게 보여 줍니다.
+            //
+            // 이 모델의 반투명 4개 중 Enscape 가 유리라고 한 것은 `재질19`
+            // 하나뿐입니다(GLASS · IoR 1.56). 나머지 셋은 GENERIC 입니다.
+            const bool authorGlass = ePbr && sm.pbr.etype == "GLASS";
             const bool guessGlass  = (alpha < 0.999f && !hasTexture);
             const bool glass       = ePbr ? authorGlass : guessGlass;
 
