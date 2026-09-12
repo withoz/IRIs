@@ -318,18 +318,37 @@ namespace iris::bridge
             // 순서 위에서 돌아갑니다. 재질만 안 보이게 둡니다.
             constexpr float kInvisible = 0.002f;
 
-            // **유리인가.** 저작자가 말했으면 그대로, 아니면 알파 휴리스틱.
+            // **유리인가 — 저작자에게 묻습니다.**
             //
-            // 휴리스틱: 건축 모델에서 알파가 걸린 단색 재질은 거의 항상
-            // 유리입니다. AlphaBlended 로 두면 굴절도 반사도 없는 '유령'처럼
-            // 보입니다. 텍스처가 있는 반투명은 잎사귀 컷아웃일 수 있어
-            // 그대로 둡니다.
+            // Enscape 의 `TypeV5` 가 답입니다. 편집기에서 Glass 를 고르면
+            // 굴절·IoR·서리유리 조절이 딸려 나오고, 그렇게 고른 것만
+            // `GLASS` 입니다. 단순히 불투명도를 낮춘 것은 `GENERIC` 이고
+            // **Enscape 도 굴절시키지 않습니다.**
             //
-            // ⚠ 휴리스틱일 뿐입니다. 세종 모델에는 `C01 색`·`L16 색` 처럼
-            //   마감 코드 이름을 단 반투명 재질이 섞여 있고, 그런 것도 유리로
-            //   휩쓸립니다. Enscape 값이 있으면 그쪽이 이깁니다.
-            const bool authorGlass = ePbr && sm.pbr.solidGlass;
-            const bool glass       = authorGlass || (alpha < 0.999f && !hasTexture);
+            // 예전에는 이 값을 읽어 두고 쓰지 않았습니다(10번 10.2 가
+            // "이 모델들은 전부 GENERIC 이라 쓸 데가 없다"고 적었는데
+            // **그 판단이 낡았습니다** — 골프존 모델에는 `재질19` 가
+            // GLASS 입니다). 대신 알파 휴리스틱으로 전부 굴절 유리를
+            // 만들었고, 그래서 반투명 칸막이
+            // (`[Translucent Glass Gray]6`, GENERIC · Opacity 0.458 ·
+            // Roughness 0.584)가 뒤를 비추지 않는 **회색 판**이 됐습니다.
+            // Enscape 화면에는 뒤의 골프 스크린이 흐릿하게 비칩니다
+            // (out/rtxpt/IRIS_vs_Enscape_칸막이.png).
+            //
+            // 휴리스틱은 **저작자가 아무 말도 안 했을 때만** 씁니다.
+            // 세종 모델은 반투명 12개 중 0개에만 Enscape 값이 있어서 거의
+            // 항상 그 길로 갑니다. 건축 모델에서 알파가 걸린 단색 재질은
+            // 거의 항상 유리이고, AlphaBlended 로 두면 굴절도 반사도 없는
+            // '유령'처럼 보입니다. 텍스처가 있는 반투명은 잎사귀 컷아웃일
+            // 수 있어 그대로 둡니다.
+            const bool authorGlass = ePbr && (sm.pbr.solidGlass || sm.pbr.etype == "GLASS");
+            const bool guessGlass  = (alpha < 0.999f && !hasTexture);
+            const bool glass       = ePbr ? authorGlass : guessGlass;
+
+            // 저작자가 "유리 아니다" 라고 했는데 반투명인 것 — 알파 블렌드로
+            // 갑니다. 몇 개인지 세어 두지 않으면 조용히 바뀝니다.
+            if (ePbr && !authorGlass && alpha < 0.999f)
+                ++stats.authorTranslucent;
 
             if (alpha <= kInvisible && !authorGlass)
             {

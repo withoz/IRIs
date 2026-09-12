@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 19:00:33 +0900
+Subject: [PATCH 41/41] =?UTF-8?q?fix:=20=EC=9C=A0=EB=A6=AC=20=ED=8C=90?=
+ =?UTF-8?q?=EC=A0=95=EC=9D=84=20=EC=A0=80=EC=9E=91=EC=9E=90=EC=97=90?=
+ =?UTF-8?q?=EA=B2=8C=20=EB=AC=BB=EC=8A=B5=EB=8B=88=EB=8B=A4=20=E2=80=94=20?=
+ =?UTF-8?q?etype=20=EC=9D=84=20=EC=9D=BD=EC=96=B4=20=EB=91=90=EA=B3=A0=20?=
+ =?UTF-8?q?=EC=95=88=20=EC=93=B0=EA=B3=A0=20=EC=9E=88=EC=97=88=EC=8A=B5?=
+ =?UTF-8?q?=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Enscape 와 나란히 놓고 왼쪽 칸막이가 갈렸습니다. Enscape 는 뒤의 골프
+스크린이 흐릿하게 비치는 반투명 판인데, 우리는 **불투명한 회색 판**
+이었습니다(out/rtxpt/IRIS_vs_Enscape_칸막이.png).
+
+## 저작자는 이미 답을 적어 두었습니다
+
+    [Translucent Glass Gray]6
+      TypeV5 = GENERIC        <- Enscape: "유리가 아니다"
+      Opacity 0.458 · Roughness 0.584 · Specular 0.858
+
+Enscape 편집기에서 Glass 를 고르면 굴절·IoR·서리유리 조절이 딸려 나오고,
+그렇게 고른 것만 TypeV5 = GLASS 입니다. 단순히 불투명도를 낮춘 것은
+GENERIC 이고 Enscape 도 굴절시키지 않습니다.
+
+우리 판정은 이랬습니다:
+
+    const bool glass = authorGlass || (alpha < 0.999f && !hasTexture);
+
+**알파가 1 미만이고 텍스처가 없으면 무조건 굴절 유리.** 그리고 거칠기
+0.584 로 굴절시키니 뒤 이미지가 균일한 회색으로 흩어졌습니다.
+
+## etype 은 내내 와 있었습니다
+
+프로토콜에도 리더에도 있습니다(IrisbReader.h:167, .cpp:529). **빌더만
+안 봤습니다.** 10번 10.2 가 "이 모델들은 전부 GENERIC 이라 쓸 데가 없다"
+고 적어 둔 것이 낡은 판단이었고 — 골프존 모델에는 `재질19` 가 GLASS
+입니다.
+
+## 고침
+
+    const bool authorGlass = ePbr && (sm.pbr.solidGlass || sm.pbr.etype == "GLASS");
+    const bool guessGlass  = (alpha < 0.999f && !hasTexture);
+    const bool glass       = ePbr ? authorGlass : guessGlass;
+
+**저작자가 말하면 그대로, 아무 말 없을 때만 추측합니다.** 휴리스틱은
+그대로 남습니다 — 세종 모델은 반투명 12개 중 0개에만 Enscape 값이 있어
+거의 항상 그 길로 갑니다.
+
+갈라진 것을 셉니다:
+
+    IRIS: 저작자가 유리가 아니라고 한 반투명 1개 (알파 블렌드)
+    IRIS: 유리로 해석한 머티리얼 5개 (그중 저작자 지정 2)
+
+## 지금 Enscape 와
+
+    전체 평균휘도   IRIS 108.4   Enscape 119.1
+    바닥            IRIS 100.0   Enscape  88.0
+    칸막이 영역     IRIS 100.6   Enscape 113.6
+    표준편차        IRIS  54.3   Enscape  70.1
+
+바닥·카펫·목재·화분·조명 패널·벽 장식까지 구도와 재질이 거의 겹칩니다.
+남은 것은 개별 재질이 아니라 **전역 밝기** — 측광 배율 5,000 cd/m² = 1.0
+이 아직 `추론` 등급입니다(10번 10.5-1). 그리고 Enscape 의 Specular
+(0.858)는 Donut 금속-거칠기 모델에 대응 칸이 없어 아직 개수만 셉니다.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index 068d80f..db26777 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -389,6 +389,8 @@ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+               (unsigned long long)stats.triangles, (unsigned long long)stats.vertices, stats.maxDepth);
+     log::info("IRIS: 재질 상속 — 상속 버킷 %zu · 인스턴스 재질 적용 %zu곳",
+               stats.inheritingBuckets, stats.overriddenSubInstances);
++    log::info("IRIS: 저작자가 유리가 아니라고 한 반투명 %zu개 (알파 블렌드)",
++              stats.authorTranslucent);
+     log::info("IRIS: 유리로 해석한 머티리얼 %zu개 (그중 저작자 지정 %zu) · 안 보임 %zu · Enscape 불투명도 적용 %zu",
+               stats.glassMaterials, stats.authorGlass,
+               stats.invisibleMaterials, stats.authorOpacity);

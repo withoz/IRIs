@@ -69,6 +69,7 @@ namespace iris::bridge
         size_t   specularOverrides = 0;   // Specular 가 0.5 가 아닌 재질
         size_t   invisibleMaterials = 0;  // 알파 0 — 호스트에서 안 보임
         size_t   authorGlass        = 0;  // Enscape 가 유리라고 한 것
+        size_t   authorTranslucent  = 0;  // Enscape 가 **유리가 아니라고** 한 반투명 (알파 블렌드)
         size_t   authorOpacity      = 0;  // Enscape 불투명도가 SketchUp 알파를 덮은 것
         size_t   cutoutMaterials    = 0;  // 텍스처 알파로 구멍을 내는 재질 (알파 테스트)
         size_t   cutoutUnmeasured   = 0;  // 그중 프로브가 픽셀을 못 재서 켠 것
