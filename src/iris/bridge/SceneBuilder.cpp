@@ -158,6 +158,18 @@ namespace iris::bridge
 #endif
         }
 
+        // RGBA8_SNORM 로 묶습니다. 셰이더가 Unpack_RGBA8_SNORM 으로 읽고
+        // .w 를 손잡이(handedness)로 씁니다(PathTracerBridgeDonut.hlsli).
+        uint32_t PackSnorm8x4(float x, float y, float z, float w)
+        {
+            auto q = [](float v) -> uint32_t {
+                v = (v < -1.0f) ? -1.0f : (v > 1.0f ? 1.0f : v);
+                const int i = static_cast<int>(std::lround(v * 127.0f));
+                return static_cast<uint32_t>(i & 0xFF);
+            };
+            return q(x) | (q(y) << 8) | (q(z) << 16) | (q(w) << 24);
+        }
+
         box3 BoundsOf(const float* pos, uint32_t vertexCount)
         {
             box3 b = box3::empty();
@@ -420,7 +432,17 @@ namespace iris::bridge
                             // 대응은 **가정** 이라 화면으로 맞춰야 합니다.
                             const float k = (sm.pbr.bump / 3.0f) * m_bumpStrength;
                             m->normalTextureScale = (k < 0.0f) ? 0.0f : (k > 4.0f ? 4.0f : k);
+                            // ⚠ 이 깃발로는 **안 됩니다.** 셰이더가 이것을
+                            //   보는 자리는 노멀맵이 적용된 **뒤**입니다
+                            //   (PathTracerBridgeDonut.hlsli:698). 켜 두는
+                            //   것은 그 뒤 단계(BSDF 탄젠트 공간)에 맞고,
+                            //   노멀맵을 살리는 것은 아래 m_anyNormalMap
+                            //   입니다. 여기서 한 번 헛짚었습니다(11번 (d)).
                             hints.ignoreMeshTangentSpace = true;
+                            // **탄젠트를 만들어야 합니다.** 없으면 셰이더가
+                            // 노멀맵을 통째로 건너뜁니다(ApplyNormalMapRTXPT
+                            // 가 squareTangentLength == 0 에서 바로 나갑니다).
+                            m_anyNormalMap = true;
                             ++stats.bumpMaterials;
                         }
                         else
@@ -591,6 +613,8 @@ namespace iris::bridge
         buffers.positionData.reserve(totalVerts);
         buffers.normalData.reserve(totalVerts);
         buffers.texcoord1Data.reserve(totalVerts);
+        if (m_anyNormalMap)
+            buffers.tangentData.reserve(totalVerts);
         buffers.indexData.reserve(totalIdx);
 
         for (const auto& b : def.meshes)
@@ -648,6 +672,69 @@ namespace iris::bridge
             else
             {
                 buffers.texcoord1Data.insert(buffers.texcoord1Data.end(), vcount, float2(0.0f, 0.0f));
+            }
+
+            // **탄젠트.** 노멀맵은 탄젠트 없이는 **아무 일도 안 합니다.**
+            //
+            //   // ApplyNormalMapRTXPT (PathTracerBridgeDonut.hlsli:299)
+            //   float squareTangentLength = dot(tangent.xyz, tangent.xyz);
+            //   if (squareTangentLength == 0)
+            //       return;
+            //
+            // `PTMaterial::IgnoreMeshTangentSpace` 로 되는 줄 알았는데 그
+            // 깃발은 노멀맵이 적용된 **뒤**에 쓰입니다(같은 파일 698줄).
+            // 범프를 붙이고도 화면이 안 바뀌어 A/B 로 찾았습니다(11번 (d)).
+            //
+            // 노멀맵을 쓰는 재질이 하나도 없으면 만들지 않습니다 — 정점당
+            // 4바이트를 공짜로 쓰지 않기 위해서입니다.
+            if (m_anyNormalMap && uv)
+            {
+                std::vector<float3> tanAcc(vcount, float3(0.0f));
+                std::vector<float3> bitAcc(vcount, float3(0.0f));
+                for (uint32_t i = 0; i + 2 < icount; i += 3)
+                {
+                    const uint32_t i0 = idx[i], i1 = idx[i + 1], i2 = idx[i + 2];
+                    if (i0 >= vcount || i1 >= vcount || i2 >= vcount)
+                        continue;
+                    const float3 p0(pos + i0 * 3), p1(pos + i1 * 3), p2(pos + i2 * 3);
+                    const float2 t0(uv + i0 * 2), t1(uv + i1 * 2), t2(uv + i2 * 2);
+                    const float3 e1 = p1 - p0, e2 = p2 - p0;
+                    const float2 d1 = t1 - t0, d2 = t2 - t0;
+                    const float det = d1.x * d2.y - d2.x * d1.y;
+                    if (std::abs(det) < 1e-12f)
+                        continue;   // UV 가 퇴화한 삼각형
+                    const float r = 1.0f / det;
+                    const float3 t = (e1 * d2.y - e2 * d1.y) * r;
+                    const float3 bt = (e2 * d1.x - e1 * d2.x) * r;
+                    tanAcc[i0] += t; tanAcc[i1] += t; tanAcc[i2] += t;
+                    bitAcc[i0] += bt; bitAcc[i1] += bt; bitAcc[i2] += bt;
+                }
+
+                for (uint32_t v = 0; v < vcount; ++v)
+                {
+                    float3 n = nrm ? float3(nrm + v * 3) : float3(0.0f, 0.0f, 1.0f);
+                    const float nl = length(n);
+                    n = (nl > 1e-8f) ? (n / nl) : float3(0.0f, 0.0f, 1.0f);
+
+                    // 그람-슈미트로 법선에 직교시킵니다.
+                    float3 t = tanAcc[v] - n * dot(n, tanAcc[v]);
+                    float tl = length(t);
+                    if (tl < 1e-8f)
+                    {
+                        // UV 가 없거나 퇴화한 정점. 아무 직교축이나 둡니다 —
+                        // 노멀맵은 이상해지지만 셰이더가 일찍 나가지는 않습니다.
+                        const float3 ref = (std::abs(n.z) < 0.9f) ? float3(0.0f, 0.0f, 1.0f)
+                                                                  : float3(1.0f, 0.0f, 0.0f);
+                        t  = cross(ref, n);
+                        tl = length(t);
+                        if (tl < 1e-8f) { t = float3(1.0f, 0.0f, 0.0f); tl = 1.0f; }
+                    }
+                    t = t / tl;
+
+                    // 손잡이. 셰이더는 bitangent = cross(N, T) * w 로 씁니다.
+                    const float w = (dot(cross(n, t), bitAcc[v]) < 0.0f) ? -1.0f : 1.0f;
+                    buffers.tangentData.push_back(PackSnorm8x4(t.x, t.y, t.z, w));
+                }
             }
 
             mesh->objectSpaceBounds |= geom->objectSpaceBounds;

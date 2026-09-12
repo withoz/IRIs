@@ -333,6 +333,9 @@ namespace iris::bridge
         bool  m_alphaCutout       = false;
         bool  m_glassThinDefault  = true;
         float m_bumpStrength      = 1.0f;
+        // 노멀맵을 쓰는 재질이 하나라도 있으면 참. 그때만 탄젠트를 만듭니다
+        // (정점당 4바이트). BuildMaterials 가 켜고 BuildMeshes 가 봅니다.
+        bool  m_anyNormalMap      = false;
         // 저장된 재질 덮어쓰기를 모델별로 가르는 키. BuildMaterials 가 채웁니다.
         std::string m_modelKey;
         IesApplier m_iesApplier;
