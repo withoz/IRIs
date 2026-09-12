@@ -1,0 +1,487 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: withoz <withoz1111@gmail.com>
+Date: Sat, 12 Sep 2026 16:43:35 +0900
+Subject: [PATCH 37/37] =?UTF-8?q?fix(iris):=20=EB=B0=B0=EA=B2=BD=EC=97=90?=
+ =?UTF-8?q?=20=EC=9E=88=EC=9C=BC=EB=A9=B4=20=EB=B3=B4=EB=82=B8=20=EC=94=AC?=
+ =?UTF-8?q?=EC=9D=B4=20=EB=B0=98=EC=98=81=EB=90=98=EC=A7=80=20=EC=95=8A?=
+ =?UTF-8?q?=EC=95=98=EC=8A=B5=EB=8B=88=EB=8B=A4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+증상: 렌더러가 배경에 있으면 SketchUp 에서 동기화를 보내도 화면이 안
+바뀝니다. 그런데 호스트는 Ack 을 받고 "렌더러 화면이 바뀌어야 합니다"
+라고 보고합니다 — **거짓 성공 보고**입니다.
+
+## 첫 진단은 틀렸습니다
+
+"시작 씬을 읽는 동안 도착한 씬이 대기열에서 버려진다" 고 적었는데
+틀렸습니다. 버려지는 것이 아니라 **아무도 집어 가지 않습니다.**
+
+틀린 채로 넘어갈 뻔한 이유: 그때 진단이 첫 LoadIrisb 에서야 파일
+갈고리를 걸어서, 씬을 한 번도 못 읽으면 추적 파일 자체가 안 생겼습니다.
+"씬이 안 왔다" 와 "갈고리가 아직 안 걸렸다" 를 가릴 수 없었습니다.
+
+## 진짜 원인
+
+Donut 의 AnimateRenderPresent 는 포커스가 없으면 프레임을 통째로
+건너뜁니다:
+
+    if (m_windowVisible && (m_windowIsInFocus || ShouldRenderUnfocused() || ...))
+
+대기 씬을 집어 가는 코드는 Sample::Animate 안에 있습니다. 사용자는
+SketchUp 에서 작업하므로 렌더러 창은 거의 항상 배경이고, 그러면
+Sample::Animate 가 돌지 않아 씬이 IrisBridge::m_pending 에 그대로
+앉아 있습니다. 파이프는 Ack 을 이미 보낸 뒤라 호스트는 모릅니다.
+
+"두 번 보내면 된다" 고 느꼈던 것은, 두 번째를 보내기 전에 창을 올려
+봤기 때문이었습니다. **두 번째 동기화 없이 창만 올려서** 확인했습니다.
+
+## 고침
+
+  Sample::ShouldRenderUnfocused()
+    호스트가 보낸 것(씬·카메라)이 있으면 포커스와 무관하게 true.
+
+  설정 render_unfocused (기본 켬)
+    RTXPT 의 RenderWhenOutOfFocus 를 몰아 배경에서도 계속 그립니다 —
+    라이브 링크에서는 이것이 켜져 있어야 제품이 성립합니다.
+    UI: IRIS > Live link > "Keep rendering in the background".
+
+확인 (렌더러 창은 손대지 않음):
+  고치기 전   1/1 재현 — 21초 동안 Animate 줄 없음
+  고친 뒤 켬  3/3 반영
+  고친 뒤 끔  1/1 반영 — 대기 작업이 루프를 깨웁니다
+
+끈 상태에서도 반영되는 것이 중요합니다. 도구설명이 그렇게 약속하므로
+그 약속이 사실이어야 합니다.
+
+## 진단을 먼저 고쳤습니다 — IrisTrace.h
+
+추적을 헤더로 빼고 InstallTraceHooks() 를 **프로세스 시작에서** 겁니다
+(Sample::Init, 파이프 서버보다 먼저). 이제 시작부터 전부 파일에 남습니다.
+
+뮤텍스도 넣었습니다. 고친 직후 확인에서 `Animate: 대기 씬을 발견` 줄이
+사라져 구조가 다른 줄 알고 헤맸는데, 수신 스레드와 렌더 스레드가 같은
+파일에 append 하다 한 줄을 잃은 것이었습니다. 진단 도구가 조용히 줄을
+잃으면 없어진 줄이 곧 "그 분기를 안 지났다" 는 증거로 읽힙니다.
+
+## 남은 구멍
+
+창을 **최소화**하면 m_windowVisible 이 거짓이라 Donut 이 훅을 묻지도
+않습니다. 복원하면 반영됩니다. 호스트는 여전히 성공으로 보고하므로
+근본 해결은 SyncAck 을 "적용했다" 로 바꾸는 프로토콜 쪽입니다 —
+10번 10.5 표 9번.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ Rtxpt/Iris/IrisScene.cpp  |  87 ++++----------------------
+ Rtxpt/Iris/IrisSettings.h |  20 ++++++
+ Rtxpt/Iris/IrisTrace.h    | 124 ++++++++++++++++++++++++++++++++++++++
+ Rtxpt/Sample.cpp          |  35 +++++++++++
+ Rtxpt/SampleUI.cpp        |  20 ++++++
+ 5 files changed, 210 insertions(+), 76 deletions(-)
+ create mode 100644 Rtxpt/Iris/IrisTrace.h
+
+diff --git a/Rtxpt/Iris/IrisScene.cpp b/Rtxpt/Iris/IrisScene.cpp
+index d1458f8..a139c24 100644
+--- a/Rtxpt/Iris/IrisScene.cpp
++++ b/Rtxpt/Iris/IrisScene.cpp
+@@ -3,6 +3,7 @@
+ #include "IrisScene.h"
+ 
+ #include "IrisSettings.h"
++#include "IrisTrace.h"
+ #include "../SampleCommon/LocalConfig.h"
+ #include "../Materials/MaterialsBaker.h"   // IRIS: MaterialEx 에 힌트를 담습니다
+ 
+@@ -23,48 +24,10 @@
+ using namespace donut;
+ using namespace donut::engine;
+ 
+-namespace
+-{
+-    // 진단용 파일 로그.
+-    //
+-    // RTXPT 를 --captureSimple 로 돌리면 stdout 이 비어 있고, 실패 시에는
+-    // 0xC0000409(abort) 로 죽으면서 버퍼가 날아가 아무것도 남지 않습니다.
+-    // 어디까지 갔는지 알려면 즉시 flush 하는 별도 경로가 필요합니다.
+-    // 환경변수 IRIS_TRACE_LOG 에 경로를 넣으면 켜집니다. 기본은 꺼져 있어
+-    // 제품 실행 중에 파일을 만들지 않습니다.
+-    const char* TracePath()
+-    {
+-        static const char* path = []() -> const char* {
+-            static std::string p;
+-            char*  buf = nullptr;
+-            size_t len = 0;
+-            if (_dupenv_s(&buf, &len, "IRIS_TRACE_LOG") == 0 && buf)
+-            {
+-                p = buf;
+-                free(buf);
+-            }
+-            return p.empty() ? nullptr : p.c_str();
+-        }();
+-        return path;
+-    }
+-
+-    void Trace(const char* fmt, ...)
+-    {
+-        const char* path = TracePath();
+-        if (!path)
+-            return;
+-        FILE* f = nullptr;
+-        if (fopen_s(&f, path, "a") != 0 || !f)
+-            return;
+-        va_list args;
+-        va_start(args, fmt);
+-        vfprintf(f, fmt, args);
+-        va_end(args);
+-        fputc('\n', f);
+-        fflush(f);
+-        fclose(f);
+-    }
+-}
++// 추적은 이제 IrisTrace.h 에 있습니다 — 프로세스 시작에서
++// InstallTraceHooks() 로 겁니다(Sample::Init).
++using iris::Trace;
++using iris::TracePath;
+ 
+ namespace
+ {
+@@ -84,10 +47,15 @@ bool IrisScene::LoadWithThreadPool(const std::filesystem::path& sceneFileName,
+     // 라이브 링크로 들어온 씬이 있으면 그것이 우선입니다. 파일이 아니라
+     // 파이프로 받은 바이트이므로 경로는 이름표일 뿐입니다.
+     const bool isLive = sceneFileName.filename().string() == iris::bridge::kLiveSceneName;
++    const bool had    = iris::bridge::IrisBridge::Get().HasPendingScene();
+     std::vector<uint8_t> live;
+-    if (isLive || iris::bridge::IrisBridge::Get().HasPendingScene())
++    if (isLive || had)
+         live = iris::bridge::IrisBridge::Get().TakePendingScene();
+ 
++    Trace("LoadWithThreadPool: %s  (라이브 이름 %s · 대기 씬 %s · 가져온 바이트 %zu)",
++          sceneFileName.filename().string().c_str(),
++          isLive ? "예" : "아니오", had ? "있음" : "없음", live.size());
++
+     if (live.empty() && sceneFileName.extension() != ".irisb")
+     {
+         if (isLive)
+@@ -124,39 +92,6 @@ bool IrisScene::LoadWithThreadPool(const std::filesystem::path& sceneFileName,
+ bool IrisScene::LoadIrisb(const std::filesystem::path& sceneFileName,
+                           const std::vector<uint8_t>& bytes)
+ {
+-    // 엔진 로그를 우리 추적 파일로도 흘려보냅니다. --captureSimple 로 돌리면
+-    // stdout 이 비어 있고, 죽을 때는 버퍼가 날아가 원인이 남지 않습니다.
+-    // 전역 콜백이므로 이 이후 엔진 전체의 로그가 파일에 남습니다.
+-    static bool logHooked = false;
+-    if (!logHooked)
+-    {
+-        logHooked = true;
+-
+-        // 0xC0000409(abort) 로 죽으면 이유가 남지 않습니다. terminate 핸들러를
+-        // 걸어 두면 잡히지 않은 예외의 메시지를 파일로 건질 수 있습니다.
+-        std::set_terminate([]()
+-        {
+-            try
+-            {
+-                if (auto e = std::current_exception())
+-                    std::rethrow_exception(e);
+-                Trace("!! std::terminate — 진행 중인 예외 없음");
+-            }
+-            catch (const std::exception& ex) { Trace("!! std::terminate — 예외: %s", ex.what()); }
+-            catch (...)                      { Trace("!! std::terminate — 알 수 없는 예외"); }
+-            std::abort();
+-        });
+-
+-        const auto prev = log::GetCallback();
+-        log::SetMinSeverity(log::Severity::Debug);
+-        log::SetCallback([prev](log::Severity s, const char* msg)
+-        {
+-            static const char* names[] = { "none", "debug", "info", "warn", "ERROR", "FATAL" };
+-            Trace("[%s] %s", names[(int)s], msg);
+-            if (prev) prev(s, msg);
+-        });
+-    }
+-
+     const bool live = !bytes.empty();
+     Trace("=== LoadIrisb 시작: %s%s", sceneFileName.string().c_str(),
+           live ? "  (라이브 링크)" : "");
+diff --git a/Rtxpt/Iris/IrisSettings.h b/Rtxpt/Iris/IrisSettings.h
+index 499dd76..d6aad17 100644
+--- a/Rtxpt/Iris/IrisSettings.h
++++ b/Rtxpt/Iris/IrisSettings.h
+@@ -107,6 +107,24 @@ namespace iris
+         // **씬을 다시 받아야** 적용됩니다.
+         bool surfaceNameRules = true;
+ 
++        // --------------------------------------------- 배경에서도 그릴까
++        //
++        // **라이브 링크에서는 이것이 켜져 있어야 제품이 성립합니다.**
++        //
++        // Donut 의 프레임 루프는 창에 포커스가 없으면 프레임을 통째로
++        // 건너뜁니다(DeviceManager::AnimateRenderPresent 의
++        // `m_windowIsInFocus || ShouldRenderUnfocused()`). 그런데 사용자는
++        // **SketchUp 에서** 작업하므로 렌더러는 거의 항상 배경입니다.
++        //
++        // 그래서 동기화를 보내도 화면이 안 바뀌었습니다. 호스트는 Ack 을 받고
++        // "렌더러 화면이 바뀌어야 합니다" 라고 보고하고, 실제로는 창을
++        // 클릭해야 그때 반영됩니다 — 거짓 성공 보고였습니다(10번 10.4-b).
++        //
++        // 끄면 배경에서 GPU 를 쉬게 할 수 있습니다. 그때도 **호스트가 보낸
++        // 것은 반영합니다** — ShouldRenderUnfocused 가 대기 중인 씬·카메라를
++        // 보면 포커스와 무관하게 프레임을 돌립니다. 다만 수렴은 덜 됩니다.
++        bool renderUnfocused = true;
++
+         // ------------------------------------------------------ 텍스처 컷아웃
+         //
+         // 나뭇잎·난간·타공판의 구멍은 재질 알파가 아니라 **텍스처의 알파
+@@ -176,6 +194,7 @@ namespace iris
+             alphaCutout          = flag("alpha_cutout", alphaCutout);
+             roughnessDefault     = num("roughness_default", roughnessDefault);
+             surfaceNameRules     = flag("surface_name_rules", surfaceNameRules);
++            renderUnfocused      = flag("render_unfocused", renderUnfocused);
+         }
+ 
+         void Save() const
+@@ -198,6 +217,7 @@ namespace iris
+             root["alpha_cutout"]          = alphaCutout;
+             root["roughness_default"]     = roughnessDefault;
+             root["surface_name_rules"]    = surfaceNameRules;
++            root["render_unfocused"]      = renderUnfocused;
+ 
+             std::ofstream f(p, std::ios::trunc);
+             if (!f.good())
+diff --git a/Rtxpt/Iris/IrisTrace.h b/Rtxpt/Iris/IrisTrace.h
+new file mode 100644
+index 0000000..011e0f5
+--- /dev/null
++++ b/Rtxpt/Iris/IrisTrace.h
+@@ -0,0 +1,124 @@
++// IRIS — 진단용 파일 추적
++//
++// This software contains source code provided by NVIDIA Corporation.
++//
++// 왜 따로 있나
++//   RTXPT 를 `--captureSimple` 로 돌리면 stdout 이 비어 있고, 죽을 때는
++//   0xC0000409(abort) 로 버퍼가 날아가 아무것도 안 남습니다. 어디까지
++//   갔는지 알려면 **즉시 flush 하는 별도 경로**가 필요합니다.
++//
++//   환경변수 `IRIS_TRACE_LOG` 에 경로를 넣으면 켜집니다. 기본은 꺼져 있어
++//   제품 실행 중에 파일을 만들지 않습니다.
++//
++// 왜 헤더로 옮겼나 — **시작이 안 보였습니다**
++//   원래 이 코드는 `IrisScene.cpp` 안에 있었고, 엔진 로그를 파일로 흘리는
++//   갈고리를 **첫 `LoadIrisb` 에서** 걸었습니다. 그래서 씬을 한 번도 못
++//   읽으면 파일 자체가 안 생깁니다.
++//
++//   "렌더러를 새로 띄운 뒤 첫 씬이 조용히 버려진다"를 쫓을 때 바로 그것이
++//   막혔습니다 — 실패하는 구간(프로세스 시작 ~ 첫 씬)이 통째로 안 보였고,
++//   추적 파일이 없다는 사실만으로는 "씬이 안 왔다"인지 "갈고리가 아직
++//   안 걸렸다"인지 가릴 수 없었습니다.
++//
++//   이제 `InstallTraceHooks()` 를 프로세스 시작에서 한 번 부릅니다.
++//
++// CMake 가 GLOB 로 소스를 모으므로 .cpp 를 늘리면 다시 구성해야 합니다 —
++// IrisSettings.h 와 같은 이유로 헤더 하나로 끝냅니다.
++
++#pragma once
++
++#include <donut/core/log.h>
++
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <exception>
++#include <mutex>
++#include <string>
++
++namespace iris
++{
++    inline const char* TracePath()
++    {
++        static const char* path = []() -> const char* {
++            static std::string p;
++            char*  buf = nullptr;
++            size_t len = 0;
++            if (_dupenv_s(&buf, &len, "IRIS_TRACE_LOG") == 0 && buf)
++            {
++                p = buf;
++                free(buf);
++            }
++            return p.empty() ? nullptr : p.c_str();
++        }();
++        return path;
++    }
++
++    // **줄을 잃지 않게 잠급니다.**
++    //
++    // 파이프 수신 스레드와 렌더 스레드가 같이 씁니다. 잠그지 않으면
++    // 가끔 한 줄이 통째로 사라지는데, 없어진 줄이 "이 분기를 지났다" 는
++    // 증거일 때 곧장 엉뚱한 결론으로 갑니다 — 실제로 한 번 그랬습니다
++    // (포커스 문제를 고친 직후 확인에서 Animate 줄이 사라졌습니다).
++    inline std::mutex& TraceMutex()
++    {
++        static std::mutex m;
++        return m;
++    }
++
++    inline void Trace(const char* fmt, ...)
++    {
++        const char* path = TracePath();
++        if (!path)
++            return;
++        std::lock_guard<std::mutex> lock(TraceMutex());
++        FILE* f = nullptr;
++        if (fopen_s(&f, path, "a") != 0 || !f)
++            return;
++        va_list args;
++        va_start(args, fmt);
++        vfprintf(f, fmt, args);
++        va_end(args);
++        fputc('\n', f);
++        fflush(f);
++        fclose(f);
++    }
++
++    // 프로세스 시작에서 **한 번** 부릅니다. 두 번 불러도 안전합니다.
++    //
++    //   * 엔진 로그를 추적 파일로도 흘립니다. 전역 콜백이라 이 이후 엔진
++    //     전체의 로그가 남습니다.
++    //   * `std::terminate` 핸들러를 겁니다 — 잡히지 않은 예외로 abort 하면
++    //     이유가 안 남기 때문입니다.
++    inline void InstallTraceHooks()
++    {
++        static bool once = false;
++        if (once)
++            return;
++        once = true;
++
++        std::set_terminate([]()
++        {
++            try
++            {
++                if (auto e = std::current_exception())
++                    std::rethrow_exception(e);
++                Trace("!! std::terminate — 진행 중인 예외 없음");
++            }
++            catch (const std::exception& ex) { Trace("!! std::terminate — 예외: %s", ex.what()); }
++            catch (...)                      { Trace("!! std::terminate — 알 수 없는 예외"); }
++            std::abort();
++        });
++
++        const auto prev = donut::log::GetCallback();
++        donut::log::SetMinSeverity(donut::log::Severity::Debug);
++        donut::log::SetCallback([prev](donut::log::Severity s, const char* msg)
++        {
++            static const char* names[] = { "none", "debug", "info", "warn", "ERROR", "FATAL" };
++            Trace("[%s] %s", names[(int)s], msg);
++            if (prev) prev(s, msg);
++        });
++
++        Trace("=== IRIS 추적 시작 ===");
++    }
++}
+diff --git a/Rtxpt/Sample.cpp b/Rtxpt/Sample.cpp
+index feea350..d32b635 100644
+--- a/Rtxpt/Sample.cpp
++++ b/Rtxpt/Sample.cpp
+@@ -12,6 +12,7 @@
+ 
+ #include "Iris/IrisScene.h"       // IRIS: .irisb 씬 로딩
+ #include "Iris/IrisSettings.h"    // IRIS: 하늘·노출 설정
++#include "Iris/IrisTrace.h"       // IRIS: 진단용 파일 추적
+ #include "iris/bridge/IrisBridge.h" // IRIS: 라이브 링크
+ 
+ #include <donut/engine/FramebufferFactory.h>
+@@ -404,6 +405,15 @@ void Sample::Init(const std::string& preferredScene,
+ 
+     // IRIS: 파이프 서버를 띄운다. 프로세스 수명 동안 살아 있어야 하므로
+     // 씬이 아니라 여기서 시작한다.
++    // IRIS: 추적 갈고리를 **파이프 서버보다 먼저** 겁니다.
++    //
++    // 예전에는 첫 LoadIrisb 에서 걸었습니다. 그래서 씬을 한 번도 못 읽으면
++    // 파일 자체가 안 생겨, "씬이 안 왔다" 와 "갈고리가 아직 안 걸렸다" 를
++    // 가릴 수 없었습니다 — 첫 씬이 버려지는 문제를 쫓을 때 바로 그것이
++    // 막혔습니다(IrisTrace.h).
++    iris::InstallTraceHooks();
++    iris::Trace("Sample::Init — 파이프 서버 시작 직전");
++
+     iris::bridge::IrisBridge::Get().SetLog([](const std::string& s) { log::info("IRIS 링크: %s", s.c_str()); });
+     if (!iris::bridge::IrisBridge::Get().Start())
+         log::warning("IRIS: 라이브 링크를 시작하지 못했습니다 — %s",
+@@ -574,6 +584,10 @@ void Sample::ApplyIrisSettings()
+     m_ui.ToneMappingParams.autoExposure         = s.autoExposure;
+     m_ui.ToneMappingParams.exposureCompensation = s.exposureCompensation;
+ 
++    // 배경에서도 그릴 것인가. 라이브 링크에서는 켜져 있어야 제품이
++    // 성립합니다 — 사용자는 SketchUp 에서 작업하므로 렌더러는 배경입니다.
++    m_ui.RenderWhenOutOfFocus = s.renderUnfocused;
++
+     // 하늘은 지금 없을 수도 있습니다. 기억을 지워 두면 PushIrisSky 가
+     // 생기는 즉시 — 또는 지금 바로 — 밀어 넣습니다.
+     m_irisSkyApplied = nullptr;
+@@ -859,7 +873,10 @@ void Sample::Animate(float fElapsedTimeSeconds)
+     // 엔진의 씬 전환 경로를 그대로 쓴다 — IrisScene 이 파일 대신 받은 바이트를
+     // 읽는다. SceneLoaded 가 BLAS 재빌드·카메라·베이커를 전부 다시 돌린다.
+     if (iris::bridge::IrisBridge::Get().HasPendingScene())
++    {
++        iris::Trace("Animate: 대기 씬을 발견 — SetCurrentScene(IRIS live) 호출");
+         SetCurrentScene(iris::bridge::kLiveSceneName, true);
++    }
+ 
+     // IRIS: 호스트 뷰포트 카메라를 따라간다.
+     //
+@@ -1730,6 +1747,24 @@ void Sample::RtxdiSetupFrame(nvrhi::IFramebuffer* framebuffer, PathTracerCameraD
+ 
+ bool Sample::ShouldRenderUnfocused()
+ {
++    // IRIS: **호스트가 보낸 것이 있으면 포커스와 무관하게 프레임을 돌립니다.**
++    //
++    // 이 검사가 없으면 라이브 링크가 조용히 거짓말을 합니다. 사용자는
++    // SketchUp 에서 작업하므로 렌더러 창은 거의 항상 배경이고, 배경이면
++    // Donut 은 프레임을 통째로 건너뜁니다 — Animate 가 안 돌아 대기 중인
++    // 씬을 아무도 집어 가지 않습니다. 그런데 파이프는 이미 Ack 을 보낸
++    // 뒤라 호스트는 "렌더러 화면이 바뀌어야 합니다" 라고 보고합니다.
++    // 창을 클릭해야 그때 반영됐습니다(10번 10.4-b).
++    //
++    // ⚠ 창을 **최소화**하면 여기까지도 안 옵니다. Donut 은 m_windowVisible
++    //   이 거짓이면 ShouldRenderUnfocused 를 묻지도 않습니다. 그때는 창을
++    //   복원할 때 반영됩니다.
++    {
++        auto& bridge = iris::bridge::IrisBridge::Get();
++        if (bridge.HasPendingScene() || bridge.HasPendingCamera())
++            return true;
++    }
++
+     if (m_frameIndex < 16 || m_ui.ResetAccumulation || m_ui.ResetRealtimeCaches || m_captureScriptManager->IsDoingWork() )
+     {
+         // Make sure we at least run one render frame to allow expensive resource creation to happen in background, and to allow at least somewhat decent convergence so when user alt-tabs they get a nice image
+diff --git a/Rtxpt/SampleUI.cpp b/Rtxpt/SampleUI.cpp
+index d74c961..191a4f9 100644
+--- a/Rtxpt/SampleUI.cpp
++++ b/Rtxpt/SampleUI.cpp
+@@ -613,6 +613,26 @@ void SampleUI::buildUI(void)
+                                   "alpha tested - the probe measures the channel.\n\n"
+                                   "Applies on the next sync from SketchUp.");
+ 
++            ImGui::SeparatorText("Live link");
++            // **켜져 있어야 라이브 링크가 성립합니다.** 사용자는 SketchUp 에서
++            // 작업하므로 렌더러 창은 거의 항상 배경이고, Donut 은 포커스가
++            // 없으면 프레임을 통째로 건너뜁니다(10번 10.4-b).
++            if (ImGui::Checkbox("Keep rendering in the background", &s.renderUnfocused))
++            {
++                apply = save = true;
++            }
++            if (ImGui::IsItemHovered())
++                ImGui::SetTooltip("You work in SketchUp, so this window is almost always\n"
++                                  "in the background. Without this, the frame loop is\n"
++                                  "paused there and a synced scene just sits in the queue\n"
++                                  "until you click the window - while SketchUp already\n"
++                                  "reported success.\n\n"
++                                  "Turning it off lets the GPU idle behind SketchUp. A\n"
++                                  "scene or camera you send is still applied (the loop\n"
++                                  "wakes for pending work), it just converges less.\n\n"
++                                  "Minimizing the window pauses everything regardless -\n"
++                                  "restore it and the pending scene lands.");
++
+             ImGui::SeparatorText("Light conversion");
+             // 둘 다 씬 그래프를 만들 때 정해집니다 — 지금 화면은 안 바뀝니다.
+             if (ImGui::Checkbox("Area lights as emissive geometry", &s.areaLightGeometry))
